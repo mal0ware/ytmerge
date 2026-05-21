@@ -43,6 +43,20 @@ ytmerge
 
 You'll see per-video progress in the terminal, get a macOS notification when it's done, and your clipboard will be replaced with the merged transcripts.
 
+## Three ways to feed it URLs
+
+`ytmerge` accepts URLs from whichever source is most convenient:
+
+```bash
+ytmerge                              # 1. clipboard (default — best for the Shortcuts.app flow)
+ytmerge "URL1" "URL2" "URL3"         # 2. CLI args
+cat urls.txt | ytmerge -             # 3. stdin (the `-` is required)
+```
+
+**Important for zsh users:** always quote URLs on the command line. The `?` in `?v=...` is a glob character, and an unquoted URL will produce `zsh: no matches found`. Quotes (`"..."`) avoid this entirely.
+
+The stdin form is the right tool when you have a lot of URLs — keep them in a text file (`urls.txt`) and pipe it in. The parser is forgiving: one URL per line, comma-separated, or mixed with other text all work the same.
+
 ## Bind to a global keyboard shortcut
 
 This is the part that makes it actually fast.

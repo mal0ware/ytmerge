@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
-"""ytmerge — clipboard → merged YouTube transcripts → clipboard.
+"""ytmerge — YouTube URLs in → merged transcripts on the clipboard.
 
-Reads URLs from the clipboard (any format — pasted notes, line-separated,
-comma-separated, whatever). Fetches transcripts. Writes a single merged
-blob back to the clipboard with clear dividers between videos. Sends a
-macOS notification when done.
+Input sources, in priority order:
+  1. Command-line args:    ytmerge URL [URL ...]
+  2. Stdin (when piped):   cat urls.txt | ytmerge
+  3. Clipboard (default):  ytmerge
+
+In every case, the merged transcript blob is written back to the clipboard
+with clear dividers between videos, and a macOS notification fires on completion.
+"""
+
+USAGE = """\
+usage: ytmerge [URL ...] | ytmerge -
+
+Reads YouTube URLs from CLI args, stdin (with `-`), or the clipboard
+(default). Writes merged transcripts to the clipboard.
+
+Examples:
+  ytmerge                          # read from clipboard (works from Shortcuts.app)
+  ytmerge "URL1" "URL2"            # read from args — QUOTE URLs in zsh (the ? globs)
+  cat urls.txt | ytmerge -         # read from stdin
 """
 
 import json
@@ -14,7 +29,10 @@ import sys
 import urllib.request
 
 import pyperclip
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    YouTubeTranscriptApiException,
+)
 
 VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})")
 DIVIDER = "=" * 80
@@ -60,22 +78,44 @@ def fetch_title(video_id: str) -> str:
 
 
 def fetch_transcript(video_id: str) -> str | None:
+    # Narrow except: only swallow the library's own "can't get this transcript"
+    # errors (disabled captions, blocked, unavailable). Letting other exceptions
+    # bubble up makes real bugs visible instead of masquerading as "no captions."
     try:
-        segments = YouTubeTranscriptApi.get_transcript(video_id)
-    except Exception:
+        segments = YouTubeTranscriptApi().fetch(video_id)
+    except YouTubeTranscriptApiException:
         return None
-    return " ".join(s["text"].replace("\n", " ") for s in segments)
+    return " ".join(s.text.replace("\n", " ") for s in segments)
+
+
+def read_input() -> tuple[str, str]:
+    """Return (raw_text, source_label).
+
+    A bare `-` in argv means read stdin. Auto-detecting stdin via isatty()
+    would break the Shortcuts.app launch path (Shortcuts hands the script
+    a non-tty stdin even though there's no data piped in).
+    """
+    args = sys.argv[1:]
+    if args == ["-"]:
+        return sys.stdin.read(), "stdin"
+    if args:
+        return " ".join(args), "args"
+    return pyperclip.paste() or "", "clipboard"
 
 
 def main() -> int:
-    raw = pyperclip.paste()
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(USAGE)
+        return 0
+
+    raw, source = read_input()
     if not raw or not raw.strip():
-        notify("clipboard is empty")
+        notify(f"{source} is empty")
         return 1
 
     ids = extract_ids(raw)
     if not ids:
-        notify("no YouTube URLs found in clipboard")
+        notify(f"no YouTube URLs found in {source}")
         return 1
 
     print(f"found {len(ids)} videos. fetching...", file=sys.stderr)
