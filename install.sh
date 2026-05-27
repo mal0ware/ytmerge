@@ -3,31 +3,79 @@ set -e
 
 cd "$(dirname "$0")"
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "Error: python3 is not installed." >&2
-    echo "Install it with \`brew install python\` (macOS) or your system package manager." >&2
-    exit 1
-fi
+OS="$(uname -s)"
 
-echo "Installing Python dependencies..."
+install_macos() {
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "Error: Homebrew is required to install dependencies on macOS." >&2
+        echo "Install it from https://brew.sh, then re-run this script." >&2
+        exit 1
+    fi
+    if ! xcode-select -p >/dev/null 2>&1; then
+        echo "Error: Xcode Command Line Tools are required (provides clang++ + SDK)." >&2
+        echo "Install with: xcode-select --install" >&2
+        exit 1
+    fi
+    echo "Installing build dependencies via Homebrew..."
+    brew install nlohmann-json >/dev/null
+}
 
-# `python3 -m pip` ties the install to the same interpreter the shebang
-# resolves to, so the script can't end up with deps installed against a
-# different python than the one it runs under.
-PIP_FLAGS=(--user --no-warn-script-location)
+install_linux() {
+    # Pick a package manager and install: a C++ compiler, libcurl-dev,
+    # nlohmann-json3-dev, plus the clipboard/notify tools used at runtime.
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Installing build + runtime dependencies via apt..."
+        sudo apt-get update -qq
+        sudo apt-get install -y \
+            build-essential pkg-config \
+            libcurl4-openssl-dev nlohmann-json3-dev \
+            xclip wl-clipboard libnotify-bin
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Installing build + runtime dependencies via dnf..."
+        sudo dnf install -y \
+            gcc-c++ make pkgconf-pkg-config \
+            libcurl-devel nlohmann-json-devel \
+            xclip wl-clipboard libnotify
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Installing build + runtime dependencies via pacman..."
+        sudo pacman -S --needed --noconfirm \
+            base-devel pkgconf \
+            curl nlohmann-json \
+            xclip wl-clipboard libnotify
+    else
+        echo "Error: no supported package manager found (apt/dnf/pacman)." >&2
+        echo "Install equivalents manually:" >&2
+        echo "  - C++20 compiler + pkg-config" >&2
+        echo "  - libcurl development headers" >&2
+        echo "  - nlohmann/json single-header (>=3.x)" >&2
+        echo "  - xclip and/or wl-clipboard for clipboard I/O" >&2
+        echo "  - notify-send (libnotify) for desktop notifications" >&2
+        exit 1
+    fi
+}
 
-# pip >= 23.0 requires --break-system-packages on PEP 668 systems
-# (Homebrew Python, recent Debian/Ubuntu). Older pip errors on the
-# unknown flag, so only add it when supported.
-if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
-    PIP_FLAGS+=(--break-system-packages)
-fi
+case "$OS" in
+    Darwin) install_macos ;;
+    Linux)  install_linux ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Detected Windows shell ($OS). install.sh doesn't handle Windows." >&2
+        echo "See the Windows section of README.md for the MSYS2 install steps." >&2
+        exit 1
+        ;;
+    *)
+        echo "Unsupported OS: $OS" >&2
+        echo "ytmerge supports macOS, Linux, and Windows (via MSYS2). See README." >&2
+        exit 1
+        ;;
+esac
 
-python3 -m pip install "${PIP_FLAGS[@]}" -r requirements.txt
+echo "Building ytmerge..."
+make clean >/dev/null 2>&1 || true
+make
 
 echo "Installing ytmerge to ~/.local/bin..."
 mkdir -p "$HOME/.local/bin"
-cp ytmerge.py "$HOME/.local/bin/ytmerge"
+cp ytmerge "$HOME/.local/bin/ytmerge"
 chmod +x "$HOME/.local/bin/ytmerge"
 
 echo ""
@@ -40,11 +88,14 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         bash) rc="~/.bashrc" ;;
         *)    rc="your shell's rc file" ;;
     esac
-    echo "⚠  ~/.local/bin is NOT on your PATH. Add this to $rc:"
+    echo "Warning: ~/.local/bin is NOT on your PATH. Add this to $rc:"
     echo '    export PATH="$HOME/.local/bin:$PATH"'
     echo "Then open a new terminal."
     echo ""
 fi
 
 echo "Test with: copy a YouTube URL, then run \`ytmerge\`"
-echo "Next: open Shortcuts.app to bind it to a keyboard shortcut. See README."
+case "$OS" in
+    Darwin) echo "Next: open Shortcuts.app to bind it to a keyboard shortcut. See README." ;;
+    Linux)  echo "Next: bind \`ytmerge\` to a keyboard shortcut via your DE's settings (GNOME Keyboard, KDE Shortcuts, etc.)." ;;
+esac

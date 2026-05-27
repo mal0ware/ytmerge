@@ -56,11 +56,26 @@ The idea stays viable for a future variant scoped at short/medium videos where `
 
 ---
 
-## Smaller improvements worth doing regardless
+## Cookies-from-browser — tested, doesn't help
 
-These don't depend on the Whisper fallback and would be wins even if it's never built:
+**Status:** tested negative. Do not pursue further unless something material changes.
 
-1. **Surface the real failure reason.** Map `IpBlocked` / `RequestBlocked` / `TranscriptsDisabled` / `NoTranscriptFound` / `VideoUnavailable` to distinct labels in per-video logs and the completion notification. The current "no captions available" hides actionable causes.
-2. **Disk cache for successful fetches** keyed by video ID. Re-running on the same URL set after a partial failure costs nothing.
-3. **Opt-in `--proxy` flag** plus transparent `HTTPS_PROXY` env var support. Doesn't help users with nothing to point at, but gives an escape hatch when they do.
-4. **Backoff + jitter between fetches** to reduce the probability of tripping the limit in the first place. Honest framing in the UI: "next attempt in Xs" (which we know), not "unblocked in X" (which we don't).
+Hypothesis was: authenticated requests get a higher rate-limit ceiling, so borrowing the user's browser cookies (without requiring any new sign-up) would lift the IP block.
+
+Result: tested with a live, valid YouTube session from Opera GX (2977 cookies extracted, no rotation warning). yt-dlp accepted the cookies and got past the player API call. The subsequent fetch from `/api/timedtext` still returned HTTP 429. The rate limit is keyed on source IP, not auth state.
+
+Conclusion: cookies cannot bypass this block. Documented here so this path isn't re-pitched in the future.
+
+---
+
+## Done in the C++ rewrite
+
+These were originally on a "smaller improvements" list. All shipped:
+
+1. **Distinct failure reasons** — `ip blocked (429)`, `video unavailable`, `no captions on video`, `no english track`, `network error`, `parse failed`. Completion notification and per-video log both use them.
+2. **Disk cache** at `~/.cache/ytmerge/<id>.txt`, 7-day TTL eviction, `--no-cache` opt-out.
+3. **`--proxy` flag and `--proxy-list` rotation** with per-proxy cooldown on 429. `HTTPS_PROXY` / `ALL_PROXY` env vars also picked up automatically via libcurl defaults.
+4. **Parallelism** — configurable worker count (default 4). Output ordering is preserved regardless of completion order.
+
+Not done (intentional):
+- Backoff + jitter between fetches. With the proxy-rotation design, the right response to a 429 is "switch proxy," not "wait longer on this IP." Direct-connection users hit the limit once and stop (`max_attempts = 1` when pool is empty).
