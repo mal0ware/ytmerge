@@ -178,22 +178,6 @@ Multiple videos are separated by blank lines. Clear delimiters help downstream L
 - The C++ binary picks up `HTTPS_PROXY` / `ALL_PROXY` env vars automatically (libcurl default behavior) — `--proxy` overrides them.
 - **Platform support:** macOS, Linux (X11 via `xclip` or Wayland via `wl-copy`), and Windows (Win32 clipboard API, no native toast). Clipboard and notification are the only OS-specific surfaces; everything else (HTTP, parsing, threading, cache) is plain C++20.
 
-## Known limitations
-
-**YouTube rate-limits the transcript endpoint, and that is the single biggest constraint on this tool.** `youtube-transcript-api` scrapes the same endpoint the YouTube web player uses, and YouTube has been progressively more aggressive about throttling and IP-blocking unauthenticated requests. In practice:
-
-- Small batches (a handful of videos) usually go through cleanly.
-- Larger batches start failing partway through with empty or blocked responses, even on videos that demonstrably have captions.
-- Running `ytmerge` repeatedly within a short window can trip a soft block where subsequent calls return nothing until the cooldown expires.
-
-The original design assumption was "paste fifteen URLs and get back fifteen transcripts in one keystroke." That assumption no longer holds reliably, and it's the reason this tool stayed a personal utility rather than something I'd hand to other people. None of the realistic workarounds belong inside the script itself:
-
-- A residential or rotating proxy changes how `ytmerge` is invoked, not what it does.
-- The official YouTube Data API v3 with `captions.download` requires OAuth and the video owner's permission — useless for arbitrary public URLs.
-- A paid transcription service (AssemblyAI, Whisper API, etc.) is a different category of tool at a different cost.
-
-Within those limits, `ytmerge` still earns its keep for small batches where the keyboard-shortcut workflow saves real time. Treat it as a "grab a few videos quickly" tool, not a "synthesize twenty videos at once" tool.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
