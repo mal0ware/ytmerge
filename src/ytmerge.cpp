@@ -14,6 +14,12 @@
 //
 // Cache: ~/.cache/ytmerge/<video_id>.txt, evicted after CACHE_TTL_DAYS.
 
+// Must precede ALL includes: curl/curl.h drags in windows.h on Win32, and its
+// min/max macros would otherwise break std::min/std::max.
+#if defined(_WIN32) && !defined(NOMINMAX)
+  #define NOMINMAX
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
