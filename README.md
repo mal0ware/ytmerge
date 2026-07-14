@@ -38,7 +38,16 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ### Windows (MSYS2 + mingw-w64)
 
-There's no `install.ps1` yet; the manual path takes about five minutes.
+With [MSYS2](https://www.msys2.org/) already installed (`winget install MSYS2.MSYS2`),
+`install.ps1` does everything below automatically — pacman deps, `make`, and an
+install to `%LOCALAPPDATA%\ytmerge\bin` (added to your user PATH), with the required
+MSYS2 runtime DLLs copied next to the exe so it runs from any shell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The manual path takes about five minutes:
 
 1. Install [MSYS2](https://www.msys2.org/) and open the **MSYS2 UCRT64** shell.
 2. Pull the toolchain and libraries:
@@ -52,7 +61,7 @@ There's no `install.ps1` yet; the manual path takes about five minutes.
    ```bash
    make
    ```
-   Output: `ytmerge.exe`. Copy it anywhere on `%PATH%` (e.g. `~/AppData/Local/Microsoft/WindowsApps/`) or call it from its build location.
+   Output: `ytmerge.exe`. Copy it anywhere on `%PATH%` (e.g. `~/AppData/Local/Microsoft/WindowsApps/`) or call it from its build location. Note: the exe depends on MSYS2 UCRT64 runtime DLLs (`libcurl-4.dll`, `libstdc++-6.dll`, ...), so outside an MSYS2 shell you must copy those DLLs next to it (`ldd ytmerge.exe` lists them) — `install.ps1` does this for you.
 
 Windows uses the Win32 clipboard API directly (no PowerShell shell-out) and skips desktop notifications — completion status prints to stderr instead.
 
