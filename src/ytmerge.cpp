@@ -34,17 +34,17 @@
 #include <mutex>
 #include <optional>
 #include <queue>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+
+#include "core.hpp"
 
 #if defined(_WIN32)
   #include <windows.h>
@@ -62,7 +62,6 @@ using clk    = std::chrono::steady_clock;
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 constexpr int  DEFAULT_WORKERS  = 4;
-constexpr int  CACHE_TTL_DAYS   = 7;
 constexpr int  PROXY_COOLDOWN_S = 600;        // 10 min cooldown on 429
 constexpr long HTTP_TIMEOUT_S   = 20;
 
@@ -245,6 +244,15 @@ std::string slurp_stdin() {
 }
 
 // Execute a process, capture stdout. Used for pbpaste / pbcopy / osascript.
+//
+// Deliberately popen()-based: every argument is wrapped in single quotes with
+// embedded quotes rewritten as '\'' — the canonical POSIX-shell escape, under
+// which no other character is special — so the shell cannot reinterpret any
+// argv element. All call sites pass fixed program names and flags (only
+// notification text ever varies), so nothing user-controlled picks the
+// command. Swapping in posix_spawn + explicit pipes would drop the shell
+// entirely, but needs manual fd plumbing and waitpid handling on two
+// platforms for no observable behavior change; not worth it at this size.
 std::string run_capture(const std::vector<std::string>& cmd, const std::string& stdin_data = "") {
     if (cmd.empty()) return "";
     std::ostringstream cmdline;
@@ -383,124 +391,17 @@ void notify(const std::string& msg) {
   #error "Unsupported platform — add clipboard/notify for this OS in src/ytmerge.cpp"
 #endif
 
-// ─── Video ID extraction ────────────────────────────────────────────────────
-
-std::vector<std::string> extract_video_ids(const std::string& text) {
-    static const std::regex id_re(
-        R"((?:v=|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11}))");
-    std::vector<std::string>          ids;
-    std::unordered_set<std::string>   seen;
-    auto begin = std::sregex_iterator(text.begin(), text.end(), id_re);
-    auto end   = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        const std::string id = (*it)[1].str();
-        if (seen.insert(id).second) ids.push_back(id);
-    }
-    return ids;
-}
-
-// ─── JSON extraction from YouTube watch page ────────────────────────────────
-//
-// The watch HTML contains a script block:
-//   var ytInitialPlayerResponse = {...};
-// We locate that JSON object by anchor, then walk braces (tracking string
-// context to ignore braces inside strings) until the matching close-brace.
-
-std::optional<std::string> extract_balanced_json(std::string_view html, std::string_view anchor) {
-    auto pos = html.find(anchor);
-    if (pos == std::string_view::npos) return std::nullopt;
-    pos = html.find('{', pos + anchor.size());
-    if (pos == std::string_view::npos) return std::nullopt;
-
-    int  depth     = 0;
-    bool in_string = false;
-    bool escape    = false;
-    for (size_t i = pos; i < html.size(); ++i) {
-        const char c = html[i];
-        if (in_string) {
-            if (escape)         escape = false;
-            else if (c == '\\') escape = true;
-            else if (c == '"')  in_string = false;
-        } else {
-            if      (c == '"') in_string = true;
-            else if (c == '{') ++depth;
-            else if (c == '}') {
-                if (--depth == 0) {
-                    return std::string(html.substr(pos, i - pos + 1));
-                }
-            }
-        }
-    }
-    return std::nullopt;
-}
-
 // ─── YouTube transcript fetch ───────────────────────────────────────────────
+//
+// The pure parsing logic (video-ID extraction, balanced-brace JSON scanner,
+// JSON3 transcript parsing, English-track selection) lives in src/core.hpp
+// so it can be unit-tested without the network.
 
 struct FetchResult {
     FetchError  error = FetchError::None;
     std::string title;
     std::string transcript;
 };
-
-// Parse the JSON3 caption format YouTube returns:
-//   { "events": [ { "segs": [ { "utf8": "Hello" }, ... ], ... }, ... ] }
-std::string parse_json3_transcript(const json& doc) {
-    std::string out;
-    if (!doc.contains("events") || !doc["events"].is_array()) return out;
-    out.reserve(8 * 1024);
-    for (const auto& ev : doc["events"]) {
-        if (!ev.contains("segs") || !ev["segs"].is_array()) continue;
-        for (const auto& seg : ev["segs"]) {
-            if (!seg.contains("utf8") || !seg["utf8"].is_string()) continue;
-            std::string text = seg["utf8"].get<std::string>();
-            std::replace(text.begin(), text.end(), '\n', ' ');
-            out += text;
-        }
-    }
-    // Collapse runs of whitespace introduced by the segment joining.
-    std::string collapsed;
-    collapsed.reserve(out.size());
-    bool prev_space = false;
-    for (char c : out) {
-        const bool is_space = (c == ' ' || c == '\t');
-        if (is_space) {
-            if (!prev_space && !collapsed.empty()) collapsed += ' ';
-            prev_space = true;
-        } else {
-            collapsed += c;
-            prev_space = false;
-        }
-    }
-    while (!collapsed.empty() && collapsed.back() == ' ') collapsed.pop_back();
-    return collapsed;
-}
-
-// Resolve the English caption track URL from a player response.
-std::optional<std::string> pick_english_track(const json& player) {
-    if (!player.contains("captions")) return std::nullopt;
-    const auto& tracklist = player["captions"]
-        .value("playerCaptionsTracklistRenderer", json::object());
-    if (!tracklist.contains("captionTracks") || !tracklist["captionTracks"].is_array())
-        return std::nullopt;
-
-    const json* manual = nullptr;
-    const json* asr    = nullptr;
-    for (const auto& t : tracklist["captionTracks"]) {
-        const std::string lang = t.value("languageCode", "");
-        if (lang.rfind("en", 0) != 0) continue;  // not English
-        const bool is_asr = (t.value("kind", "") == "asr");
-        if (is_asr) { if (!asr)    asr    = &t; }
-        else        { if (!manual) manual = &t; }
-    }
-    const json* pick = manual ? manual : asr;
-    if (!pick) return std::nullopt;
-    if (!pick->contains("baseUrl")) return std::nullopt;
-    std::string url = (*pick)["baseUrl"].get<std::string>();
-    // Force JSON3 format — easier to parse and unicode-safe.
-    url += (url.find('?') == std::string::npos ? '?' : '&');
-    url += "fmt=json3";
-    return url;
-}
 
 FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& video_id) {
     FetchResult fr;
@@ -521,7 +422,7 @@ FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& vide
             return fr;
         }
 
-        auto player_json_text = extract_balanced_json(
+        auto player_json_text = core::extract_balanced_json(
             watch.body, "ytInitialPlayerResponse");
         if (!player_json_text) {
             fr.error = FetchError::ParseFailed;
@@ -546,7 +447,7 @@ FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& vide
             fr.title = player["videoDetails"].value("title", "");
         }
 
-        auto track_url = pick_english_track(player);
+        auto track_url = core::pick_english_track(player);
         if (!track_url) {
             // Distinguish: no captions at all vs. captions but none in English.
             const bool has_any_tracks =
@@ -571,7 +472,7 @@ FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& vide
         try { doc = json::parse(caps.body); }
         catch (...) { fr.error = FetchError::ParseFailed; return fr; }
 
-        fr.transcript = parse_json3_transcript(doc);
+        fr.transcript = core::parse_json3_transcript(doc);
         if (fr.transcript.empty()) { fr.error = FetchError::ParseFailed; return fr; }
 
         if (fr.title.empty()) fr.title = video_id;
@@ -589,30 +490,14 @@ FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& vide
 //   first line: title
 //   second line: blank
 //   remainder:  transcript
-// We use file mtime for TTL eviction.
-
-fs::path cache_dir() {
-#if defined(_WIN32)
-    // Standard Windows app-data location for per-user caches.
-    const char* base = std::getenv("LOCALAPPDATA");
-    if (!base) base = std::getenv("USERPROFILE");
-    if (!base) return {};
-    return fs::path(base) / "ytmerge" / "cache";
-#else
-    // XDG_CACHE_HOME wins on Linux when set; macOS falls through to ~/.cache,
-    // which keeps the path identical between the two POSIX targets.
-    const char* xdg = std::getenv("XDG_CACHE_HOME");
-    if (xdg && *xdg) return fs::path(xdg) / "ytmerge";
-    const char* home = std::getenv("HOME");
-    if (!home) return {};
-    return fs::path(home) / ".cache" / "ytmerge";
-#endif
-}
+// We use file mtime for TTL eviction. Path/key computation lives in
+// src/core.hpp (core::cache_dir / core::cache_entry_path); the file I/O
+// stays here.
 
 std::optional<FetchResult> cache_read(const std::string& video_id) {
-    auto dir = cache_dir();
+    auto dir = core::cache_dir();
     if (dir.empty()) return std::nullopt;
-    fs::path p = dir / (video_id + ".txt");
+    fs::path p = core::cache_entry_path(dir, video_id);
     std::error_code ec;
     if (!fs::exists(p, ec)) return std::nullopt;
 
@@ -621,7 +506,7 @@ std::optional<FetchResult> cache_read(const std::string& video_id) {
     if (ec) return std::nullopt;
     const auto age =
         decltype(ftime)::clock::now() - ftime;
-    if (age > std::chrono::hours(24 * CACHE_TTL_DAYS)) {
+    if (age > std::chrono::hours(24 * core::CACHE_TTL_DAYS)) {
         fs::remove(p, ec);
         return std::nullopt;
     }
@@ -640,17 +525,17 @@ std::optional<FetchResult> cache_read(const std::string& video_id) {
 }
 
 void cache_write(const std::string& video_id, const FetchResult& r) {
-    auto dir = cache_dir();
+    auto dir = core::cache_dir();
     if (dir.empty()) return;
     std::error_code ec;
     fs::create_directories(dir, ec);
-    std::ofstream f(dir / (video_id + ".txt"), std::ios::trunc);
+    std::ofstream f(core::cache_entry_path(dir, video_id), std::ios::trunc);
     if (!f) return;
     f << r.title << "\n\n" << r.transcript;
 }
 
 void cache_evict_old() {
-    auto dir = cache_dir();
+    auto dir = core::cache_dir();
     if (dir.empty()) return;
     std::error_code ec;
     if (!fs::exists(dir, ec)) return;
@@ -659,7 +544,7 @@ void cache_evict_old() {
         if (!entry.is_regular_file()) continue;
         auto ftime = fs::last_write_time(entry, ec);
         if (ec) continue;
-        if ((now - ftime) > std::chrono::hours(24 * CACHE_TTL_DAYS)) {
+        if ((now - ftime) > std::chrono::hours(24 * core::CACHE_TTL_DAYS)) {
             fs::remove(entry, ec);
         }
     }
@@ -750,7 +635,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto ids = extract_video_ids(raw);
+    auto ids = core::extract_video_ids(raw);
     if (ids.empty()) {
         notify("no YouTube URLs found in " + source);
         return 1;

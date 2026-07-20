@@ -2,6 +2,11 @@ CXX      ?= clang++
 CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wpedantic
 LDFLAGS  ?=
 
+# Vendored single-header nlohmann/json lives in third_party/, so a fresh clone
+# builds without a system json package. Added last on the include path, so a
+# system-installed copy (apt/brew/MSYS2) still takes precedence when present.
+CXXFLAGS += -Ithird_party
+
 UNAME_S := $(shell uname -s 2>/dev/null)
 
 # ─── macOS ────────────────────────────────────────────────────────────────
@@ -48,20 +53,31 @@ ifneq (,$(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S)))
   LDFLAGS  += -luser32 -lpthread
 endif
 
-BIN := ytmerge
-SRC := src/ytmerge.cpp
+BIN      := ytmerge
+SRC      := src/ytmerge.cpp
+TEST_BIN := ytmerge_tests
+TEST_SRC := tests/test_core.cpp
 
 all: $(BIN)
 
 $(BIN): $(SRC)
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
+# The unit tests cover only the pure logic in src/core.hpp, so they need
+# neither libcurl nor any platform LDFLAGS — just the C++ standard library and
+# the vendored headers. This target builds anywhere `make` and a compiler exist.
+$(TEST_BIN): $(TEST_SRC) src/core.hpp tests/doctest.h
+	$(CXX) $(CXXFLAGS) -o $@ $(TEST_SRC)
+
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
 clean:
-	rm -f $(BIN) $(BIN).exe
+	rm -f $(BIN) $(BIN).exe $(TEST_BIN) $(TEST_BIN).exe
 
 install: $(BIN)
 	mkdir -p $(HOME)/.local/bin
 	cp $(BIN) $(HOME)/.local/bin/$(BIN)
 	chmod +x $(HOME)/.local/bin/$(BIN)
 
-.PHONY: all clean install
+.PHONY: all test clean install

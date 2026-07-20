@@ -1,7 +1,9 @@
 # Build output
 ytmerge
+ytmerge_tests
 *.o
 *.dSYM/
+build/
 
 # IDE
 .vscode/
