@@ -123,13 +123,18 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Idempotent so a re-run after a transient API failure succeeds: if the
+      # release already exists (e.g. a previous attempt created it but died
+      # mid-upload), just (re-)upload the assets instead of failing on create.
       - name: Create release with binaries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
           notes="RELEASE_NOTES_${tag}.md"
-          if [ -f "$notes" ]; then
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          elif [ -f "$notes" ]; then
             gh release create "$tag" dist/* --title "ytmerge $tag" --notes-file "$notes"
           else
             gh release create "$tag" dist/* --title "ytmerge $tag" --generate-notes
