@@ -62,7 +62,7 @@ The idea stays viable for a future variant scoped at short/medium videos where `
 
 Hypothesis was: authenticated requests get a higher rate-limit ceiling, so borrowing the user's browser cookies (without requiring any new sign-up) would lift the IP block.
 
-Result: tested with a live, valid YouTube session from Opera GX (2977 cookies extracted, no rotation warning). yt-dlp accepted the cookies and got past the player API call. The subsequent fetch from `/api/timedtext` still returned HTTP 429. The rate limit is keyed on source IP, not auth state.
+Result: tested with a valid, authenticated YouTube browser session. yt-dlp accepted the cookies and got past the player API call. The subsequent fetch from `/api/timedtext` still returned HTTP 429. The rate limit is keyed on source IP, not auth state.
 
 Conclusion: cookies cannot bypass this block. Documented here so this path isn't re-pitched in the future.
 
