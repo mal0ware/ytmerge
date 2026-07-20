@@ -27,14 +27,16 @@ one bound hotkey), paste merged transcripts.
   `curl/curl.h`) broke `std::min`/`std::max`. `NOMINMAX` is now defined before all
   includes.
 
-## Installation (compile from source)
+## Installation
 
-This release is source-only; no prebuilt binaries are attached yet. CI
-(`.github/workflows/ci.yml`) builds on ubuntu / macos / windows and uploads
-per-platform build artifacts — prebuilt binaries can be attached to releases once
-those CI runs are validated. Note the Windows CI artifact is a bare `ytmerge.exe`
-that additionally needs the MSYS2 UCRT64 runtime DLLs; `install.ps1` handles that
-locally by copying them next to the installed exe.
+Prebuilt binaries are attached to this release:
+
+- `ytmerge-linux-x86_64.tar.gz` — dynamically linked against system libcurl.
+- `ytmerge-macos-arm64.tar.gz` — Apple Silicon; uses the system libcurl.
+- `ytmerge-windows-x86_64.zip` — `ytmerge.exe` bundled with the MSYS2 UCRT64
+  runtime DLLs it needs, so it runs from any shell; unzip anywhere and run.
+
+Or compile from source:
 
 - **macOS / Linux:** `./install.sh` — installs deps (Homebrew / apt / dnf / pacman),
   builds with `make`, installs to `~/.local/bin`.

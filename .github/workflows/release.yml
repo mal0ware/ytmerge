@@ -1,0 +1,136 @@
+name: Release
+
+# Tag push (v*) → build the three OS binaries, run the unit tests, and attach
+# the packaged binaries to a GitHub Release for that tag. Release notes come
+# from RELEASE_NOTES_<tag>.md when the repo has one, else GitHub's generated
+# notes.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Build Linux (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libcurl4-openssl-dev nlohmann-json3-dev
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test
+
+      - name: Package
+        run: tar -czf ytmerge-linux-x86_64.tar.gz ytmerge
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytmerge-linux-x86_64
+          path: ytmerge-linux-x86_64.tar.gz
+
+  macos:
+    name: Build macOS (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install nlohmann-json
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test
+
+      - name: Package
+        run: tar -czf ytmerge-macos-arm64.tar.gz ytmerge
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytmerge-macos-arm64
+          path: ytmerge-macos-arm64.tar.gz
+
+  windows:
+    name: Build Windows (MSYS2 UCRT64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make
+            pkgconf
+            zip
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-nlohmann-json
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test
+
+      # The MinGW exe needs the UCRT64 runtime DLLs (libcurl-4, libstdc++-6,
+      # ...) next to it to run outside MSYS2 — same trick install.ps1 uses.
+      - name: Package (exe + runtime DLLs)
+        run: |
+          mkdir -p stage
+          cp ytmerge.exe stage/
+          ldd ytmerge.exe | awk '/=> \/ucrt64\//{print $3}' | while read -r f; do
+            cp "$f" stage/
+          done
+          cd stage && zip ../ytmerge-windows-x86_64.zip ./*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytmerge-windows-x86_64
+          path: ytmerge-windows-x86_64.zip
+
+  release:
+    name: Create GitHub Release
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release with binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes="RELEASE_NOTES_${tag}.md"
+          if [ -f "$notes" ]; then
+            gh release create "$tag" dist/* --title "ytmerge $tag" --notes-file "$notes"
+          else
+            gh release create "$tag" dist/* --title "ytmerge $tag" --generate-notes
+          fi
