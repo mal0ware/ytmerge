@@ -32,7 +32,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -445,6 +444,20 @@ struct VideoOutcome {
     std::string video_note;                // non-fatal video-download failure
 };
 
+// --print after_move:filepath → last non-empty stdout line. Used to derive
+// the downloaded media's path (and hence the paired .txt's stem) from
+// yt-dlp's own filename sanitization, which differs from sanitize_filename.
+static std::string last_nonempty_stdout_line(const std::string& out) {
+    std::istringstream ss(out);
+    std::string line, last;
+    while (std::getline(ss, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.pop_back();
+        if (!line.empty()) last = line;
+    }
+    return last;
+}
+
 // Find the phase-1 subtitle file: <workdir>/<id>.<lang>.json3
 std::optional<fs::path> find_subs_file(const fs::path& workdir,
                                        const std::string& video_id) {
@@ -501,6 +514,9 @@ VideoOutcome process_video(const std::string& ytdlp_path,
     }
     if (meta.id.empty()) meta.id = video_id;
     out.title = meta.title.empty() ? video_id : meta.title;
+    // Keep meta.title in sync: an empty TITLE line makes cache_read_doc's
+    // v1-sniff reject the cached entry forever.
+    if (meta.title.empty()) meta.title = out.title;
 
     // Parse subtitles (absence is not fatal: doc says "no transcript available").
     std::string transcript_text;
@@ -532,14 +548,7 @@ VideoOutcome process_video(const std::string& ytdlp_path,
             out.video_note = std::string("video download failed: ")
                              + ytdlp::error_label(ytdlp::classify_stderr(dl.err));
         } else {
-            // --print after_move:filepath → last non-empty stdout line.
-            std::istringstream ss(dl.out);
-            std::string line, last;
-            while (std::getline(ss, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
-                    line.pop_back();
-                if (!line.empty()) last = line;
-            }
+            std::string last = last_nonempty_stdout_line(dl.out);
             if (!last.empty()) media_path = last;
         }
     }
@@ -728,6 +737,7 @@ int main(int argc, char** argv) {
                     // Cached doc: only the media download remains (skipped
                     // under --no-video). No info.json on disk — download_cmd
                     // falls back to the URL.
+                    fs::path media_path;
                     if (!args.no_video) {
                         auto dl = proc::run(
                             ytdlp::download_cmd(ytdlp_path->string(), slot.id, "",
@@ -736,17 +746,33 @@ int main(int argc, char** argv) {
                                                 args.mp3 ? "mp3" : "",
                                                 pool.next()),
                             1800);
-                        if (dl.timed_out || dl.exit_code != 0)
-                            slot.outcome.video_note = "video download failed";
+                        if (dl.timed_out) {
+                            slot.outcome.video_note = "video download timed out";
+                        } else if (dl.exit_code != 0) {
+                            slot.outcome.video_note = std::string("video download failed: ")
+                                             + ytdlp::error_label(ytdlp::classify_stderr(dl.err));
+                        } else {
+                            std::string last = last_nonempty_stdout_line(dl.out);
+                            if (!last.empty()) media_path = last;
+                        }
                     }
-                    // The .txt must be re-materialized into out_dir every
-                    // run, mirroring process_video's standalone naming.
+                    // Write the .txt next to the media file (same stem, using
+                    // yt-dlp's own sanitization) — mirroring process_video —
+                    // or fall back to the standalone name when there is no
+                    // media path (--no-video, download failed, or yt-dlp
+                    // printed nothing on a skip).
                     std::error_code ec;
-                    fs::create_directories(args.out_dir, ec);
-                    const fs::path doc_path = fs::path(args.out_dir)
-                        / (ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
-                                                                               : slot.outcome.title)
-                           + ".txt");
+                    fs::path doc_path;
+                    if (!media_path.empty()) {
+                        doc_path = media_path;
+                        doc_path.replace_extension(".txt");
+                    } else {
+                        fs::create_directories(args.out_dir, ec);
+                        doc_path = fs::path(args.out_dir)
+                            / (ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
+                                                                                   : slot.outcome.title)
+                               + ".txt");
+                    }
                     std::ofstream f(doc_path, std::ios::trunc | std::ios::binary);
                     if (f) f << slot.outcome.document;
                 } else {
@@ -777,6 +803,7 @@ int main(int argc, char** argv) {
     std::string blob;
     std::unordered_map<std::string, int> failures;
     int ok = 0;
+    int media_failed = 0;
     bool ip_blocked = false;
     for (const auto& slot : results) {
         if (slot.outcome.error != ytdlp::Err::None) {
@@ -784,6 +811,7 @@ int main(int argc, char** argv) {
             if (slot.outcome.error == ytdlp::Err::IpBlocked) ip_blocked = true;
             continue;
         }
+        if (!slot.outcome.video_note.empty()) ++media_failed;
         if (!blob.empty()) blob += "\n\n";
         blob += slot.outcome.document;
         ++ok;
@@ -796,6 +824,7 @@ int main(int argc, char** argv) {
     else if (ok == 0)     summary << "all " << ids.size() << " failed";
     else                  summary << ok << "/" << ids.size() << " ok — files in "
                                   << args.out_dir << ", transcripts on clipboard";
+    if (media_failed > 0) summary << ", " << media_failed << " media failed";
     if (!failures.empty()) {
         summary << "  [";
         bool first = true;
