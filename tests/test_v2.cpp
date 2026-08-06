@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "../src/transcript.hpp"
+#include "../src/doc.hpp"
 
 #include <string>
 #include <vector>
@@ -82,4 +83,45 @@ TEST_CASE("render_transcript: chapter boundary forces paragraph break") {
 
 TEST_CASE("render_transcript: empty cues") {
     CHECK(transcript::render_transcript({}, {}, 45.0).empty());
+}
+
+TEST_CASE("parse_info_json: full metadata") {
+    json info = json::parse(R"({
+      "id": "dQw4w9WgXcQ", "title": "A Video", "channel": "Some Channel",
+      "upload_date": "20260805", "duration": 3675,
+      "view_count": 1000, "like_count": 50,
+      "tags": ["a", "b"], "description": "line1\nline2",
+      "chapters": [{"start_time": 0.0, "title": "Intro"},
+                   {"start_time": 60.5, "title": "Main"}]
+    })");
+    auto m = doc::parse_info_json(info);
+    CHECK(m.id == "dQw4w9WgXcQ");
+    CHECK(m.title == "A Video");
+    CHECK(m.channel == "Some Channel");
+    CHECK(m.upload_date == "2026-08-05");
+    CHECK(m.duration_s == 3675);
+    CHECK(m.view_count == 1000);
+    CHECK(m.like_count == 50);
+    REQUIRE(m.tags.size() == 2);
+    REQUIRE(m.chapters.size() == 2);
+    CHECK(m.chapters[1].start_s == doctest::Approx(60.5));
+    CHECK(m.chapters[1].title == "Main");
+}
+
+TEST_CASE("parse_info_json: nulls and missing fields tolerated") {
+    json info = json::parse(R"({
+      "id": "x", "title": "T", "uploader": "Fallback Uploader",
+      "duration": null, "like_count": null
+    })");
+    auto m = doc::parse_info_json(info);
+    CHECK(m.channel == "Fallback Uploader");   // "channel" absent -> "uploader"
+    CHECK(m.duration_s == 0);
+    CHECK(m.like_count == -1);
+    CHECK(m.upload_date.empty());
+    CHECK(m.chapters.empty());
+}
+
+TEST_CASE("format_duration") {
+    CHECK(doc::format_duration(75)   == "1:15");
+    CHECK(doc::format_duration(3675) == "1:01:15");
 }
