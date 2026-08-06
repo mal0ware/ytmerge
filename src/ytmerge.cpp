@@ -414,12 +414,22 @@ std::optional<fs::path> ensure_ytdlp() {
         return std::nullopt;
     }
     fs::create_directories(dir, ec);
-    const fs::path part = fs::path(local.string() + ".part");
+    fs::path part = local;
+    part += ".part";
     {
         std::ofstream f(part, std::ios::trunc | std::ios::binary);
-        if (!f) return std::nullopt;
-        f.write(resp.body.data(),
-                static_cast<std::streamsize>(resp.body.size()));
+        bool ok = false;
+        if (f) {
+            f.write(resp.body.data(),
+                    static_cast<std::streamsize>(resp.body.size()));
+            f.flush();
+            ok = static_cast<bool>(f);
+        }
+        if (!ok) {
+            std::cerr << "error: could not write yt-dlp download to disk\n";
+            fs::remove(part, ec);
+            return std::nullopt;
+        }
     }
     fs::rename(part, local, ec);
     if (ec) {
@@ -617,7 +627,7 @@ VideoOutcome process_video(const std::string& ytdlp_path,
         doc_path = media_path;
         doc_path.replace_extension(".txt");
     } else {
-        fs::create_directories(args.out_dir, ec);
+        fs::create_directories(path_from_utf8(args.out_dir), ec);
         doc_path = path_from_utf8(args.out_dir)
                    / path_from_utf8(ytdlp::sanitize_filename(out.title) + ".txt");
     }
@@ -822,7 +832,7 @@ int main(int argc, char** argv) {
                         doc_path = media_path;
                         doc_path.replace_extension(".txt");
                     } else {
-                        fs::create_directories(args.out_dir, ec);
+                        fs::create_directories(path_from_utf8(args.out_dir), ec);
                         doc_path = path_from_utf8(args.out_dir)
                             / path_from_utf8(
                                   ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
@@ -867,7 +877,8 @@ int main(int argc, char** argv) {
             if (slot.outcome.error == ytdlp::Err::IpBlocked) ip_blocked = true;
             continue;
         }
-        if (!slot.outcome.video_note.empty()) ++media_failed;
+        if (slot.outcome.video_note.find("video download") != std::string::npos)
+            ++media_failed;
         if (slot.outcome.video_note.find("doc write failed") != std::string::npos)
             ++doc_failed;
         if (!blob.empty()) blob += "\n\n";
