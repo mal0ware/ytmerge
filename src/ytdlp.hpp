@@ -97,6 +97,7 @@ inline std::vector<std::string> download_cmd(const std::string& ytdlp_path,
         "--no-playlist", "--no-progress", "--no-warnings",
         "--windows-filenames", "--no-overwrites",
         "--paths", outdir, "--output", "%(title)s.%(ext)s",
+        "--print", "filename",
         "--no-simulate", "--print", "after_move:filepath",
     });
     if (audio_only) {

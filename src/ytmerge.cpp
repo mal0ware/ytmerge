@@ -105,7 +105,8 @@ public:
     HttpClient(const HttpClient&) = delete;
     HttpClient& operator=(const HttpClient&) = delete;
 
-    HttpResponse get(const std::string& url, const std::string& proxy = "") {
+    HttpResponse get(const std::string& url, const std::string& proxy = "",
+                     long timeout_s = HTTP_TIMEOUT_S) {
         HttpResponse r;
         if (!handle_) { r.curl_code = CURLE_FAILED_INIT; return r; }
 
@@ -113,7 +114,7 @@ public:
         curl_easy_setopt(handle_, CURLOPT_URL, url.c_str());
         curl_easy_setopt(handle_, CURLOPT_USERAGENT, USER_AGENT);
         curl_easy_setopt(handle_, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(handle_, CURLOPT_TIMEOUT, HTTP_TIMEOUT_S);
+        curl_easy_setopt(handle_, CURLOPT_TIMEOUT, timeout_s);
         curl_easy_setopt(handle_, CURLOPT_NOSIGNAL, 1L);  // thread safety
         curl_easy_setopt(handle_, CURLOPT_WRITEFUNCTION, curl_write_cb);
         curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &r.body);
@@ -400,18 +401,31 @@ std::optional<fs::path> ensure_ytdlp() {
 
     std::cerr << "yt-dlp not found — downloading (one-time, ~15 MB)...\n";
     HttpClient http;
-    auto resp = http.get(deps::ytdlp_download_url());
+    auto resp = http.get(deps::ytdlp_download_url(), "", 300);
     if (resp.curl_code != CURLE_OK || resp.status / 100 != 2 || resp.body.empty()) {
-        std::cerr << "error: could not download yt-dlp (HTTP "
-                  << resp.status << ")\n";
+        std::string reason = resp.curl_code != CURLE_OK
+            ? curl_easy_strerror(resp.curl_code)
+            : ("HTTP " + std::to_string(resp.status));
+        std::cerr << "error: could not download yt-dlp (" << reason << ")\n";
+        return std::nullopt;
+    }
+    if (resp.body.size() < 1024 * 1024) {
+        std::cerr << "error: downloaded yt-dlp is implausibly small\n";
         return std::nullopt;
     }
     fs::create_directories(dir, ec);
+    const fs::path part = fs::path(local.string() + ".part");
     {
-        std::ofstream f(local, std::ios::trunc | std::ios::binary);
+        std::ofstream f(part, std::ios::trunc | std::ios::binary);
         if (!f) return std::nullopt;
         f.write(resp.body.data(),
                 static_cast<std::streamsize>(resp.body.size()));
+    }
+    fs::rename(part, local, ec);
+    if (ec) {
+        std::cerr << "error: could not install yt-dlp (" << ec.message() << ")\n";
+        fs::remove(part, ec);
+        return std::nullopt;
     }
 #if !defined(_WIN32)
     fs::permissions(local,
@@ -456,6 +470,35 @@ static std::string last_nonempty_stdout_line(const std::string& out) {
         if (!line.empty()) last = line;
     }
     return last;
+}
+
+// fs::path built from a narrow std::string converts via the ANSI codepage on
+// Windows, mangling non-ASCII filenames (yt-dlp stdout paths, titles). Route
+// through UTF-16 there; POSIX narrow strings are already the native encoding.
+static fs::path path_from_utf8(const std::string& s) {
+#if defined(_WIN32)
+    return fs::path(utf8_to_wide(s));
+#else
+    return fs::path(s);
+#endif
+}
+
+// Writes `content` to `path` and detects failure: an unopenable stream, or a
+// write/flush error (disk full, permission race, etc.). On failure appends
+// "doc write failed: <path>" to *note (joined with "; " when non-empty).
+static void write_doc_checked(const fs::path& path, const std::string& content,
+                              std::string& note) {
+    std::ofstream f(path, std::ios::trunc | std::ios::binary);
+    bool ok = false;
+    if (f) {
+        f << content;
+        f.flush();
+        ok = static_cast<bool>(f);
+    }
+    if (!ok) {
+        const std::string msg = "doc write failed: " + path.string();
+        note = note.empty() ? msg : (note + "; " + msg);
+    }
 }
 
 // Find the phase-1 subtitle file: <workdir>/<id>.<lang>.json3
@@ -528,9 +571,24 @@ VideoOutcome process_video(const std::string& ytdlp_path,
             transcript_text = transcript::render_transcript(
                 transcript::parse_json3_cues(j), meta.chapters);
         } catch (...) { /* leave empty */ }
-        fs::remove(*subs, ec);
     }
     out.document = doc::compose_document(meta, transcript_text);
+
+    // --sub-langs "en.*,en" can write several <id>.<variant>.json3 files (only
+    // one of which was picked above) — sweep all of them, not just that one.
+    {
+        std::error_code sub_ec;
+        for (const auto& e : fs::directory_iterator(workdir, sub_ec)) {
+            if (!e.is_regular_file()) continue;
+            const std::string name = e.path().filename().string();
+            const std::string prefix = video_id + ".";
+            if (name.rfind(prefix, 0) == 0 &&
+                name.size() > 6 && name.substr(name.size() - 6) == ".json3") {
+                std::error_code rm_ec;
+                fs::remove(e.path(), rm_ec);
+            }
+        }
+    }
 
     // Phase 2: media download (skipped by --no-video). Reuses phase-1 metadata.
     fs::path media_path;
@@ -549,7 +607,7 @@ VideoOutcome process_video(const std::string& ytdlp_path,
                              + ytdlp::error_label(ytdlp::classify_stderr(dl.err));
         } else {
             std::string last = last_nonempty_stdout_line(dl.out);
-            if (!last.empty()) media_path = last;
+            if (!last.empty()) media_path = path_from_utf8(last);
         }
     }
 
@@ -560,13 +618,10 @@ VideoOutcome process_video(const std::string& ytdlp_path,
         doc_path.replace_extension(".txt");
     } else {
         fs::create_directories(args.out_dir, ec);
-        doc_path = fs::path(args.out_dir)
-                   / (ytdlp::sanitize_filename(out.title) + ".txt");
+        doc_path = path_from_utf8(args.out_dir)
+                   / path_from_utf8(ytdlp::sanitize_filename(out.title) + ".txt");
     }
-    {
-        std::ofstream f(doc_path, std::ios::trunc | std::ios::binary);
-        if (f) f << out.document;
-    }
+    write_doc_checked(doc_path, out.document, out.video_note);
     fs::remove(info_path, ec);
     return out;
 }
@@ -753,7 +808,7 @@ int main(int argc, char** argv) {
                                              + ytdlp::error_label(ytdlp::classify_stderr(dl.err));
                         } else {
                             std::string last = last_nonempty_stdout_line(dl.out);
-                            if (!last.empty()) media_path = last;
+                            if (!last.empty()) media_path = path_from_utf8(last);
                         }
                     }
                     // Write the .txt next to the media file (same stem, using
@@ -768,13 +823,13 @@ int main(int argc, char** argv) {
                         doc_path.replace_extension(".txt");
                     } else {
                         fs::create_directories(args.out_dir, ec);
-                        doc_path = fs::path(args.out_dir)
-                            / (ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
-                                                                                   : slot.outcome.title)
-                               + ".txt");
+                        doc_path = path_from_utf8(args.out_dir)
+                            / path_from_utf8(
+                                  ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
+                                                                                       : slot.outcome.title)
+                                  + ".txt");
                     }
-                    std::ofstream f(doc_path, std::ios::trunc | std::ios::binary);
-                    if (f) f << slot.outcome.document;
+                    write_doc_checked(doc_path, slot.outcome.document, slot.outcome.video_note);
                 } else {
                     slot.outcome = process_video(ytdlp_path->string(), slot.id,
                                                  args, pool, fmt);
@@ -804,6 +859,7 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string, int> failures;
     int ok = 0;
     int media_failed = 0;
+    int doc_failed = 0;
     bool ip_blocked = false;
     for (const auto& slot : results) {
         if (slot.outcome.error != ytdlp::Err::None) {
@@ -812,6 +868,8 @@ int main(int argc, char** argv) {
             continue;
         }
         if (!slot.outcome.video_note.empty()) ++media_failed;
+        if (slot.outcome.video_note.find("doc write failed") != std::string::npos)
+            ++doc_failed;
         if (!blob.empty()) blob += "\n\n";
         blob += slot.outcome.document;
         ++ok;
@@ -825,6 +883,7 @@ int main(int argc, char** argv) {
     else                  summary << ok << "/" << ids.size() << " ok — files in "
                                   << args.out_dir << ", transcripts on clipboard";
     if (media_failed > 0) summary << ", " << media_failed << " media failed";
+    if (doc_failed > 0)   summary << ", " << doc_failed << " doc-writes failed";
     if (!failures.empty()) {
         summary << "  [";
         bool first = true;

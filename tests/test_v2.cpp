@@ -217,6 +217,7 @@ TEST_CASE("download_cmd: load-info-json + print filepath, proxy passthrough") {
     CHECK(has("/w/abc.info.json"));
     CHECK(has("--no-simulate"));           // --print alone implies simulate
     CHECK(has("after_move:filepath"));
+    CHECK(has("filename"));                // pre-download print: skip-case fallback
     CHECK(has(ytdlp::FORMAT_MERGED));
     CHECK(has("--windows-filenames"));
     CHECK(has("--proxy"));
