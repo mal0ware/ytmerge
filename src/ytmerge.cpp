@@ -1,18 +1,28 @@
-// ytmerge — YouTube URLs in → merged transcripts on the clipboard.
+// ytmerge — YouTube URLs in → per-video mp4 + transcript docs, merged
+// transcripts on the clipboard. Downloads and metadata are driven by yt-dlp
+// (bootstrapped automatically); parsing/composition logic lives in the
+// headers below so it can be unit-tested without the network.
 //
 // Sources, in priority order:
-//   1. CLI args:      ytmerge URL [URL ...]
-//   2. Stdin:         cat urls.txt | ytmerge -
-//   3. Clipboard:     ytmerge   (default; works from Shortcuts.app)
+//   1. File:        ytmerge links.txt   (any text file containing URLs)
+//   2. CLI args:     ytmerge URL [URL ...]
+//   3. Stdin:        cat urls.txt | ytmerge -
+//   4. Clipboard:    ytmerge   (default; auto-uses ./links.txt when the
+//                    clipboard has no URLs)
 //
 // Flags:
-//   --proxy URL              single proxy for all requests
-//   --proxy-list FILE        one proxy per line; round-robin, cooldown on 429
-//   --workers N              parallel worker count (default: 4)
-//   --no-cache               skip the disk cache for this run
-//   -h, --help               print usage and exit
+//   --no-video                transcripts + metadata only (no download)
+//   --audio                   audio-only download (best available format)
+//   --mp3                     audio-only download, converted to mp3
+//   --out DIR                 output directory (default: downloaded)
+//   --proxy URL                single proxy for all requests
+//   --proxy-list FILE          one proxy per line; round-robin, cooldown on 429
+//   --workers N                parallel worker count (default: 4)
+//   --no-cache                 skip the disk cache for this run
+//   --update                   force a yt-dlp self-update check now
+//   -h, --help                 print usage and exit
 //
-// Cache: ~/.cache/ytmerge/<video_id>.txt, evicted after CACHE_TTL_DAYS.
+// Cache: <cache dir>/<video_id>.txt, evicted after CACHE_TTL_DAYS.
 
 // Must precede ALL includes: curl/curl.h drags in windows.h on Win32, and its
 // min/max macros would otherwise break std::min/std::max.
@@ -45,6 +55,12 @@
 #include <nlohmann/json.hpp>
 
 #include "core.hpp"
+#include "cli.hpp"
+#include "deps.hpp"
+#include "doc.hpp"
+#include "proc.hpp"
+#include "transcript.hpp"
+#include "ytdlp.hpp"
 
 #if defined(_WIN32)
   #include <windows.h>
@@ -61,40 +77,12 @@ using clk    = std::chrono::steady_clock;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-constexpr int  DEFAULT_WORKERS  = 4;
 constexpr int  PROXY_COOLDOWN_S = 600;        // 10 min cooldown on 429
 constexpr long HTTP_TIMEOUT_S   = 20;
 
 constexpr const char* USER_AGENT =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-const std::string DIVIDER(80, '=');
-
-// ─── Error model ────────────────────────────────────────────────────────────
-
-enum class FetchError {
-    None,
-    IpBlocked,            // HTTP 429 on timedtext
-    Network,              // libcurl error or non-2xx other than 429
-    Unavailable,          // playabilityStatus != OK (private/age-gated/removed)
-    TranscriptsDisabled,  // no captionTracks in player response
-    NoEnglishTrack,       // captionTracks present but none for English
-    ParseFailed,          // malformed response
-};
-
-const char* error_label(FetchError e) {
-    switch (e) {
-        case FetchError::None:                return "ok";
-        case FetchError::IpBlocked:           return "ip blocked (429)";
-        case FetchError::Network:             return "network error";
-        case FetchError::Unavailable:         return "video unavailable";
-        case FetchError::TranscriptsDisabled: return "no captions on video";
-        case FetchError::NoEnglishTrack:      return "no english track";
-        case FetchError::ParseFailed:         return "parse failed";
-    }
-    return "unknown";
-}
 
 // ─── HTTP client ────────────────────────────────────────────────────────────
 
@@ -194,48 +182,6 @@ private:
 };
 
 // ─── Input ──────────────────────────────────────────────────────────────────
-
-struct Args {
-    std::vector<std::string> urls;
-    std::string              proxy;
-    std::string              proxy_list_path;
-    int                      workers   = DEFAULT_WORKERS;
-    bool                     no_cache  = false;
-    bool                     from_stdin = false;
-    bool                     help      = false;
-};
-
-const char* USAGE =
-    "usage: ytmerge [URL ...] | ytmerge - | ytmerge\n"
-    "\n"
-    "Sources (in priority order):\n"
-    "  CLI args        ytmerge \"URL1\" \"URL2\"   (quote URLs in zsh)\n"
-    "  Stdin           cat urls.txt | ytmerge -\n"
-    "  Clipboard       ytmerge                  (default)\n"
-    "\n"
-    "Options:\n"
-    "  --proxy URL          single proxy for all requests\n"
-    "  --proxy-list FILE    one proxy per line; round-robin with cooldown on 429\n"
-    "  --workers N          parallel workers (default 4)\n"
-    "  --no-cache           skip disk cache for this run\n"
-    "  -h, --help           this message\n"
-    "\n"
-    "Output is merged transcripts on the clipboard.\n";
-
-Args parse_args(int argc, char** argv) {
-    Args a;
-    for (int i = 1; i < argc; ++i) {
-        std::string s = argv[i];
-        if (s == "-h" || s == "--help") { a.help = true; }
-        else if (s == "-")              { a.from_stdin = true; }
-        else if (s == "--no-cache")     { a.no_cache = true; }
-        else if (s == "--proxy" && i + 1 < argc)      { a.proxy = argv[++i]; }
-        else if (s == "--proxy-list" && i + 1 < argc) { a.proxy_list_path = argv[++i]; }
-        else if (s == "--workers" && i + 1 < argc)    { a.workers = std::max(1, std::atoi(argv[++i])); }
-        else                                          { a.urls.push_back(std::move(s)); }
-    }
-    return a;
-}
 
 std::string slurp_stdin() {
     std::ostringstream ss;
@@ -391,147 +337,40 @@ void notify(const std::string& msg) {
   #error "Unsupported platform — add clipboard/notify for this OS in src/ytmerge.cpp"
 #endif
 
-// ─── YouTube transcript fetch ───────────────────────────────────────────────
-//
-// The pure parsing logic (video-ID extraction, balanced-brace JSON scanner,
-// JSON3 transcript parsing, English-track selection) lives in src/core.hpp
-// so it can be unit-tested without the network.
+// ─── Disk cache v2 ──────────────────────────────────────────────────────────
+// <cache>/<id>.txt now stores the entire composed document. v1 entries
+// (title\n\ntranscript) simply miss extract_title and get refetched.
 
-struct FetchResult {
-    FetchError  error = FetchError::None;
-    std::string title;
-    std::string transcript;
-};
-
-FetchResult fetch_one(HttpClient& http, ProxyPool& pool, const std::string& video_id) {
-    FetchResult fr;
-
-    // Only retry when there's a non-empty proxy pool to rotate through; with
-    // no proxies, retrying just bangs the same rate-limited IP repeatedly.
-    const int max_attempts = pool.empty() ? 1 : 3;
-    for (int attempt = 0; attempt < max_attempts; ++attempt) {
-        const std::string proxy = pool.next();
-
-        // 1) Watch page → ytInitialPlayerResponse
-        const std::string watch_url =
-            "https://www.youtube.com/watch?v=" + video_id;
-        auto watch = http.get(watch_url, proxy);
-        if (watch.curl_code != CURLE_OK || watch.status / 100 != 2) {
-            if (watch.status == 429) { pool.mark_blocked(proxy); continue; }
-            fr.error = FetchError::Network;
-            return fr;
-        }
-
-        auto player_json_text = core::extract_balanced_json(
-            watch.body, "ytInitialPlayerResponse");
-        if (!player_json_text) {
-            fr.error = FetchError::ParseFailed;
-            return fr;
-        }
-
-        json player;
-        try { player = json::parse(*player_json_text); }
-        catch (...) { fr.error = FetchError::ParseFailed; return fr; }
-
-        // playabilityStatus.status == "OK" means the video is accessible.
-        if (player.contains("playabilityStatus")) {
-            const std::string status = player["playabilityStatus"]
-                .value("status", "");
-            if (!status.empty() && status != "OK") {
-                fr.error = FetchError::Unavailable;
-                return fr;
-            }
-        }
-
-        if (player.contains("videoDetails")) {
-            fr.title = player["videoDetails"].value("title", "");
-        }
-
-        auto track_url = core::pick_english_track(player);
-        if (!track_url) {
-            // Distinguish: no captions at all vs. captions but none in English.
-            const bool has_any_tracks =
-                player.contains("captions") &&
-                player["captions"]
-                    .value("playerCaptionsTracklistRenderer", json::object())
-                    .contains("captionTracks");
-            fr.error = has_any_tracks ? FetchError::NoEnglishTrack
-                                      : FetchError::TranscriptsDisabled;
-            return fr;
-        }
-
-        // 2) Fetch the timedtext JSON3 — this is the rate-limited endpoint.
-        auto caps = http.get(*track_url, proxy);
-        if (caps.curl_code != CURLE_OK || caps.status / 100 != 2) {
-            if (caps.status == 429) { pool.mark_blocked(proxy); continue; }
-            fr.error = FetchError::Network;
-            return fr;
-        }
-
-        json doc;
-        try { doc = json::parse(caps.body); }
-        catch (...) { fr.error = FetchError::ParseFailed; return fr; }
-
-        fr.transcript = core::parse_json3_transcript(doc);
-        if (fr.transcript.empty()) { fr.error = FetchError::ParseFailed; return fr; }
-
-        if (fr.title.empty()) fr.title = video_id;
-        return fr;
-    }
-
-    fr.error = FetchError::IpBlocked;
-    return fr;
-}
-
-// ─── Disk cache ─────────────────────────────────────────────────────────────
-//
-// Layout: $HOME/.cache/ytmerge/<video_id>.txt
-// Format:
-//   first line: title
-//   second line: blank
-//   remainder:  transcript
-// We use file mtime for TTL eviction. Path/key computation lives in
-// src/core.hpp (core::cache_dir / core::cache_entry_path); the file I/O
-// stays here.
-
-std::optional<FetchResult> cache_read(const std::string& video_id) {
+std::optional<std::string> cache_read_doc(const std::string& video_id) {
     auto dir = core::cache_dir();
     if (dir.empty()) return std::nullopt;
     fs::path p = core::cache_entry_path(dir, video_id);
     std::error_code ec;
     if (!fs::exists(p, ec)) return std::nullopt;
-
-    // TTL check via mtime.
     auto ftime = fs::last_write_time(p, ec);
     if (ec) return std::nullopt;
-    const auto age =
-        decltype(ftime)::clock::now() - ftime;
-    if (age > std::chrono::hours(24 * core::CACHE_TTL_DAYS)) {
+    if (decltype(ftime)::clock::now() - ftime >
+        std::chrono::hours(24 * core::CACHE_TTL_DAYS)) {
         fs::remove(p, ec);
         return std::nullopt;
     }
-
-    std::ifstream f(p);
+    std::ifstream f(p, std::ios::binary);
     if (!f) return std::nullopt;
-    FetchResult r;
-    std::getline(f, r.title);
-    std::string blank;
-    std::getline(f, blank);
-    std::ostringstream rest;
-    rest << f.rdbuf();
-    r.transcript = rest.str();
-    if (r.transcript.empty()) return std::nullopt;
-    return r;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    std::string d = ss.str();
+    if (doc::extract_title(d).empty()) return std::nullopt;  // v1-format entry
+    return d;
 }
 
-void cache_write(const std::string& video_id, const FetchResult& r) {
+void cache_write_doc(const std::string& video_id, const std::string& document) {
     auto dir = core::cache_dir();
     if (dir.empty()) return;
     std::error_code ec;
     fs::create_directories(dir, ec);
-    std::ofstream f(core::cache_entry_path(dir, video_id), std::ios::trunc);
-    if (!f) return;
-    f << r.title << "\n\n" << r.transcript;
+    std::ofstream f(core::cache_entry_path(dir, video_id),
+                    std::ios::trunc | std::ios::binary);
+    if (f) f << document;
 }
 
 void cache_evict_old() {
@@ -550,16 +389,184 @@ void cache_evict_old() {
     }
 }
 
+// ─── yt-dlp bootstrap ───────────────────────────────────────────────────────
+
+std::optional<fs::path> ensure_ytdlp() {
+    if (auto p = deps::find_on_path("yt-dlp")) return p;
+    const fs::path dir = deps::bin_dir();
+    if (dir.empty()) return std::nullopt;
+    const fs::path local = dir / deps::ytdlp_local_name();
+    std::error_code ec;
+    if (fs::is_regular_file(local, ec)) return local;
+
+    std::cerr << "yt-dlp not found — downloading (one-time, ~15 MB)...\n";
+    HttpClient http;
+    auto resp = http.get(deps::ytdlp_download_url());
+    if (resp.curl_code != CURLE_OK || resp.status / 100 != 2 || resp.body.empty()) {
+        std::cerr << "error: could not download yt-dlp (HTTP "
+                  << resp.status << ")\n";
+        return std::nullopt;
+    }
+    fs::create_directories(dir, ec);
+    {
+        std::ofstream f(local, std::ios::trunc | std::ios::binary);
+        if (!f) return std::nullopt;
+        f.write(resp.body.data(),
+                static_cast<std::streamsize>(resp.body.size()));
+    }
+#if !defined(_WIN32)
+    fs::permissions(local,
+        fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+        fs::perms::others_read | fs::perms::others_exec,
+        fs::perm_options::replace, ec);
+#endif
+    std::cerr << "yt-dlp installed to " << local.string() << '\n';
+    return local;
+}
+
+void maybe_update_ytdlp(const fs::path& ytdlp, bool force) {
+    const fs::path stamp = deps::bin_dir() / ".last-update-check";
+    if (!force && !deps::update_due(stamp)) return;
+    std::cerr << "checking for yt-dlp update...\n";
+    auto r = proc::run({ytdlp.string(), "-U"}, 300);
+    if (!r.out.empty()) std::cerr << r.out;
+    std::error_code ec;
+    fs::create_directories(stamp.parent_path(), ec);
+    std::ofstream f(stamp, std::ios::trunc);  // touch: mtime = now
+    f << "";
+}
+
+// ─── Per-video pipeline ─────────────────────────────────────────────────────
+
+struct VideoOutcome {
+    ytdlp::Err  error = ytdlp::Err::None;  // fatal for this video
+    std::string document;                  // composed .txt content (when ok)
+    std::string title;
+    std::string video_note;                // non-fatal video-download failure
+};
+
+// Find the phase-1 subtitle file: <workdir>/<id>.<lang>.json3
+std::optional<fs::path> find_subs_file(const fs::path& workdir,
+                                       const std::string& video_id) {
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(workdir, ec)) {
+        if (!e.is_regular_file()) continue;
+        const std::string name = e.path().filename().string();
+        if (name.rfind(video_id + ".", 0) == 0 &&
+            name.size() > 6 && name.substr(name.size() - 6) == ".json3")
+            return e.path();
+    }
+    return std::nullopt;
+}
+
+VideoOutcome process_video(const std::string& ytdlp_path,
+                           const std::string& video_id,
+                           const cli::Args& args,
+                           ProxyPool& pool,
+                           const std::string& fmt) {
+    VideoOutcome out;
+    const fs::path workdir = core::cache_dir() / "work";
+    std::error_code ec;
+    fs::create_directories(workdir, ec);
+
+    // Phase 1: metadata + subs. Retry across proxies on 429 (v1 policy: one
+    // attempt when there is no pool to rotate through).
+    const int max_attempts = pool.empty() ? 1 : 3;
+    proc::Result meta_run;
+    std::string used_proxy;
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        used_proxy = pool.next();
+        meta_run = proc::run(
+            ytdlp::metadata_cmd(ytdlp_path, video_id, workdir.string(), used_proxy),
+            300);
+        if (meta_run.timed_out) { out.error = ytdlp::Err::Timeout; return out; }
+        if (meta_run.exit_code == 0) break;
+        const auto err = ytdlp::classify_stderr(meta_run.err);
+        if (err == ytdlp::Err::IpBlocked) { pool.mark_blocked(used_proxy); continue; }
+        out.error = err;
+        return out;
+    }
+    if (meta_run.exit_code != 0) { out.error = ytdlp::Err::IpBlocked; return out; }
+
+    // Parse info.json.
+    const fs::path info_path = workdir / (video_id + ".info.json");
+    doc::VideoMeta meta;
+    {
+        std::ifstream f(info_path, std::ios::binary);
+        if (!f) { out.error = ytdlp::Err::ParseFailed; return out; }
+        json info;
+        try { f >> info; }
+        catch (...) { out.error = ytdlp::Err::ParseFailed; return out; }
+        meta = doc::parse_info_json(info);
+    }
+    if (meta.id.empty()) meta.id = video_id;
+    out.title = meta.title.empty() ? video_id : meta.title;
+
+    // Parse subtitles (absence is not fatal: doc says "no transcript available").
+    std::string transcript_text;
+    if (auto subs = find_subs_file(workdir, video_id)) {
+        std::ifstream f(*subs, std::ios::binary);
+        json j;
+        try {
+            f >> j;
+            transcript_text = transcript::render_transcript(
+                transcript::parse_json3_cues(j), meta.chapters);
+        } catch (...) { /* leave empty */ }
+        fs::remove(*subs, ec);
+    }
+    out.document = doc::compose_document(meta, transcript_text);
+
+    // Phase 2: media download (skipped by --no-video). Reuses phase-1 metadata.
+    fs::path media_path;
+    if (!args.no_video) {
+        auto dl = proc::run(
+            ytdlp::download_cmd(ytdlp_path, video_id, info_path.string(),
+                                args.out_dir, fmt,
+                                args.audio || args.mp3,
+                                args.mp3 ? "mp3" : "",
+                                used_proxy),
+            1800);
+        if (dl.timed_out) {
+            out.video_note = "video download timed out";
+        } else if (dl.exit_code != 0) {
+            out.video_note = std::string("video download failed: ")
+                             + ytdlp::error_label(ytdlp::classify_stderr(dl.err));
+        } else {
+            // --print after_move:filepath → last non-empty stdout line.
+            std::istringstream ss(dl.out);
+            std::string line, last;
+            while (std::getline(ss, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+                    line.pop_back();
+                if (!line.empty()) last = line;
+            }
+            if (!last.empty()) media_path = last;
+        }
+    }
+
+    // Write the .txt next to the media file (same stem) or standalone.
+    fs::path doc_path;
+    if (!media_path.empty()) {
+        doc_path = media_path;
+        doc_path.replace_extension(".txt");
+    } else {
+        fs::create_directories(args.out_dir, ec);
+        doc_path = fs::path(args.out_dir)
+                   / (ytdlp::sanitize_filename(out.title) + ".txt");
+    }
+    {
+        std::ofstream f(doc_path, std::ios::trunc | std::ios::binary);
+        if (f) f << out.document;
+    }
+    fs::remove(info_path, ec);
+    return out;
+}
+
 // ─── Worker pool ────────────────────────────────────────────────────────────
 
 struct Job {
     size_t      index;
     std::string video_id;
-};
-
-struct OutputSlot {
-    std::string video_id;
-    FetchResult result;
 };
 
 class WorkQueue {
@@ -607,157 +614,182 @@ std::vector<std::string> load_proxy_list(const std::string& path) {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
-    Args args = parse_args(argc, argv);
+    cli::Args args = cli::parse_args(argc, argv);
     if (args.help) {
-        std::cout << USAGE;
+        std::cout << cli::USAGE;
         return 0;
     }
 
-    // Gather raw input text.
-    std::string raw;
-    std::string source;
-    if (!args.urls.empty()) {
-        for (size_t i = 0; i < args.urls.size(); ++i) {
-            if (i) raw += ' ';
-            raw += args.urls[i];
-        }
-        source = "args";
-    } else if (args.from_stdin) {
-        raw = slurp_stdin();
-        source = "stdin";
-    } else {
-        raw = read_clipboard();
-        source = "clipboard";
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    auto ytdlp_path = ensure_ytdlp();
+    if (!ytdlp_path) {
+        notify("ytmerge: yt-dlp unavailable — cannot continue");
+        curl_global_cleanup();
+        return 1;
     }
 
-    if (raw.empty() || raw.find_first_not_of(" \t\r\n") == std::string::npos) {
-        notify(source + " is empty");
-        return 1;
+    // --update with no other input is a valid standalone invocation.
+    const bool update_only =
+        args.do_update && args.urls.empty() && args.input_file.empty() &&
+        !args.from_stdin;
+
+    // Gather raw input text.
+    std::string raw, source;
+    if (!update_only) {
+        if (!args.input_file.empty()) {
+            std::ifstream f(args.input_file, std::ios::binary);
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            raw = ss.str();
+            source = args.input_file;
+        } else if (!args.urls.empty()) {
+            for (size_t i = 0; i < args.urls.size(); ++i) {
+                if (i) raw += ' ';
+                raw += args.urls[i];
+            }
+            source = "args";
+        } else if (args.from_stdin) {
+            raw = slurp_stdin();
+            source = "stdin";
+        } else {
+            raw = read_clipboard();
+            source = "clipboard";
+            // Auto-fallback: clipboard empty of URLs but ./links.txt exists.
+            if (core::extract_video_ids(raw).empty() &&
+                cli::default_file_exists("links.txt")) {
+                std::ifstream f("links.txt", std::ios::binary);
+                std::ostringstream ss;
+                ss << f.rdbuf();
+                raw = ss.str();
+                source = "links.txt";
+            }
+        }
     }
 
     auto ids = core::extract_video_ids(raw);
-    if (ids.empty()) {
+    if (ids.empty() && !update_only) {
         notify("no YouTube URLs found in " + source);
+        curl_global_cleanup();
         return 1;
     }
 
-    // Build proxy pool. CLI --proxy is preferred over --proxy-list (use one or
-    // the other; a single proxy is just a pool of size 1 for our purposes).
+    // Proxy pool (v1 semantics: --proxy wins over --proxy-list).
     std::vector<std::string> proxy_list;
     if (!args.proxy.empty())                proxy_list.push_back(args.proxy);
     else if (!args.proxy_list_path.empty()) proxy_list = load_proxy_list(args.proxy_list_path);
     ProxyPool pool(std::move(proxy_list));
 
-    if (!args.no_cache) cache_evict_old();
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-
-    // Per-id slots, keyed by index so output order matches input order.
-    std::vector<OutputSlot> results(ids.size());
-    for (size_t i = 0; i < ids.size(); ++i) results[i].video_id = ids[i];
-
-    // Cache pass first — fills slots that hit, queues the rest.
-    WorkQueue q;
-    std::atomic<size_t> remaining{0};
-    std::cerr << "found " << ids.size() << " videos. fetching...\n";
-    for (size_t i = 0; i < ids.size(); ++i) {
-        if (!args.no_cache) {
-            if (auto cached = cache_read(ids[i])) {
-                results[i].result = std::move(*cached);
-                std::cerr << "  [" << (i + 1) << "/" << ids.size()
-                          << "] " << ids[i] << "  (cache)\n";
-                continue;
-            }
-        }
-        q.push({i, ids[i]});
-        ++remaining;
+    // ffmpeg decides merged vs single-file format (spec fallback rule).
+    std::string fmt = ytdlp::FORMAT_MERGED;
+    if (!args.no_video && !args.audio && !args.mp3 &&
+        !deps::find_on_path("ffmpeg")) {
+        std::cerr << "warning: ffmpeg not found — falling back to single-file "
+                     "format (lower max quality)\n";
+        fmt = ytdlp::FORMAT_SINGLE;
     }
 
-    // Worker pool — workers default to args.workers, but capped at remaining
-    // job count (no point spawning 4 threads for 1 video).
-    const int n_workers =
-        std::max(1, std::min<int>(args.workers, static_cast<int>(remaining.load())));
+    if (!args.no_cache) cache_evict_old();
+
+    // Slots + cache pass. A cache hit still needs the media file: skip the
+    // whole video only when its .txt already materialized AND --no-video, or
+    // let phase 2 run standalone otherwise.
+    struct Slot { std::string id; VideoOutcome outcome; bool from_cache = false; };
+    std::vector<Slot> results(ids.size());
+    WorkQueue q;
+    size_t queued = 0;
+    std::cerr << "found " << ids.size() << " videos. fetching...\n";
+    for (size_t i = 0; i < ids.size(); ++i) {
+        results[i].id = ids[i];
+        if (!args.no_cache) {
+            if (auto d = cache_read_doc(ids[i])) {
+                results[i].outcome.document = std::move(*d);
+                results[i].outcome.title = doc::extract_title(results[i].outcome.document);
+                results[i].from_cache = true;
+                std::cerr << "  [" << (i + 1) << "/" << ids.size() << "] "
+                          << ids[i] << "  (cache)\n";
+                // fall through: still queued unless --no-video, so the mp4
+                // gets downloaded; process_video is skipped for cached docs.
+            }
+        }
+        if (!results[i].from_cache || !args.no_video) {
+            q.push({i, ids[i]});
+            ++queued;
+        }
+    }
+
+    const int n_workers = std::max(
+        1, std::min<int>(args.workers, static_cast<int>(std::max<size_t>(queued, 1))));
     std::vector<std::thread> workers;
     std::mutex log_mu;
     for (int w = 0; w < n_workers; ++w) {
         workers.emplace_back([&]() {
-            HttpClient http;
             while (true) {
                 auto job = q.pop();
                 if (!job) return;
-                FetchResult fr = fetch_one(http, pool, job->video_id);
-                {
-                    std::lock_guard l(log_mu);
-                    std::cerr << "  [" << (job->index + 1) << "/" << ids.size()
-                              << "] " << job->video_id;
-                    if (fr.error == FetchError::None) std::cerr << "  ok\n";
-                    else std::cerr << "  FAIL: " << error_label(fr.error) << '\n';
+                Slot& slot = results[job->index];
+                if (slot.from_cache) {
+                    // Cached doc: only the media download remains. No
+                    // info.json on disk — download_cmd falls back to the URL.
+                    auto dl = proc::run(
+                        ytdlp::download_cmd(ytdlp_path->string(), slot.id, "",
+                                            args.out_dir, fmt,
+                                            args.audio || args.mp3,
+                                            args.mp3 ? "mp3" : "",
+                                            pool.next()),
+                        1800);
+                    if (dl.timed_out || dl.exit_code != 0)
+                        slot.outcome.video_note = "video download failed";
+                } else {
+                    slot.outcome = process_video(ytdlp_path->string(), slot.id,
+                                                 args, pool, fmt);
+                    if (slot.outcome.error == ytdlp::Err::None && !args.no_cache)
+                        cache_write_doc(slot.id, slot.outcome.document);
                 }
-                results[job->index].result = std::move(fr);
-                if (results[job->index].result.error == FetchError::None && !args.no_cache) {
-                    cache_write(job->video_id, results[job->index].result);
+                std::lock_guard l(log_mu);
+                std::cerr << "  [" << (job->index + 1) << "/" << ids.size()
+                          << "] " << slot.id;
+                if (slot.outcome.error == ytdlp::Err::None) {
+                    std::cerr << "  ok";
+                    if (!slot.outcome.video_note.empty())
+                        std::cerr << "  (" << slot.outcome.video_note << ")";
+                    std::cerr << '\n';
+                } else {
+                    std::cerr << "  FAIL: "
+                              << ytdlp::error_label(slot.outcome.error) << '\n';
                 }
             }
         });
     }
     q.close();
     for (auto& t : workers) t.join();
-    curl_global_cleanup();
 
-    // Build output blob in original input order.
-    std::vector<std::string> blocks;
-    std::unordered_map<std::string, int> failure_counts;
+    // Merged clipboard blob + summary, input order preserved.
+    std::string blob;
+    std::unordered_map<std::string, int> failures;
     int ok = 0;
+    bool ip_blocked = false;
     for (const auto& slot : results) {
-        const auto& r = slot.result;
-        if (r.error != FetchError::None) {
-            failure_counts[error_label(r.error)]++;
+        if (slot.outcome.error != ytdlp::Err::None) {
+            failures[ytdlp::error_label(slot.outcome.error)]++;
+            if (slot.outcome.error == ytdlp::Err::IpBlocked) ip_blocked = true;
             continue;
         }
-        const std::string url = "https://www.youtube.com/watch?v=" + slot.video_id;
-        std::ostringstream blk;
-        blk << DIVIDER << '\n'
-            << "TITLE: " << (r.title.empty() ? slot.video_id : r.title) << '\n'
-            << "URL:   " << url << '\n'
-            << DIVIDER << "\n\n"
-            << r.transcript << '\n';
-        blocks.push_back(blk.str());
+        if (!blob.empty()) blob += "\n\n";
+        blob += slot.outcome.document;
         ++ok;
     }
 
-    if (blocks.empty()) {
-        std::string detail;
-        for (const auto& [label, n] : failure_counts) {
-            if (!detail.empty()) detail += ", ";
-            detail += std::to_string(n) + " " + label;
-        }
-        notify("all " + std::to_string(ids.size()) + " failed — " + detail);
-        // Surface the IP-block remediation hint when that's the cause.
-        bool ip_blocked = false;
-        for (const auto& slot : results)
-            if (slot.result.error == FetchError::IpBlocked) { ip_blocked = true; break; }
-        if (ip_blocked) {
-            std::cerr <<
-                "  hint: YouTube has rate-limited this IP. Either:\n"
-                "    - switch network (phone hotspot, VPN, different wifi)\n"
-                "    - wait a few hours\n"
-                "    - re-run with --proxy URL or --proxy-list FILE\n";
-        }
-        return 1;
-    }
-
-    std::string out;
-    for (size_t i = 0; i < blocks.size(); ++i) {
-        if (i) out += "\n\n";
-        out += blocks[i];
-    }
-    write_clipboard(out);
+    if (ok > 0) write_clipboard(blob);
 
     std::ostringstream summary;
-    summary << "ok " << ok << " transcripts copied (" << out.size() << " chars)";
-    if (!failure_counts.empty()) {
+    if (ids.empty())      summary << "update check only";
+    else if (ok == 0)     summary << "all " << ids.size() << " failed";
+    else                  summary << ok << "/" << ids.size() << " ok — files in "
+                                  << args.out_dir << ", transcripts on clipboard";
+    if (!failures.empty()) {
         summary << "  [";
         bool first = true;
-        for (const auto& [label, n] : failure_counts) {
+        for (const auto& [label, n] : failures) {
             if (!first) summary << ", ";
             summary << n << " " << label;
             first = false;
@@ -765,5 +797,17 @@ int main(int argc, char** argv) {
         summary << "]";
     }
     notify(summary.str());
-    return 0;
+    if (ip_blocked) {
+        std::cerr <<
+            "  hint: YouTube has rate-limited this IP. Either:\n"
+            "    - switch network (phone hotspot, VPN, different wifi)\n"
+            "    - wait a few hours\n"
+            "    - re-run with --proxy URL or --proxy-list FILE\n";
+    }
+
+    // Daily (or forced) yt-dlp self-update — after the batch, never before.
+    maybe_update_ytdlp(*ytdlp_path, args.do_update);
+
+    curl_global_cleanup();
+    return (ok > 0 || (update_only && ids.empty())) ? 0 : 1;
 }

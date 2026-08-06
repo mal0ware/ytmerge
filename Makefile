@@ -60,7 +60,7 @@ TEST_SRC := tests/test_core.cpp tests/test_v2.cpp
 
 all: $(BIN)
 
-$(BIN): $(SRC)
+$(BIN): $(SRC) src/core.hpp src/cli.hpp src/deps.hpp src/doc.hpp src/proc.hpp src/transcript.hpp src/ytdlp.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 # The unit tests cover only the pure logic in src/core.hpp, so they need

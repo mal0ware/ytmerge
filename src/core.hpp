@@ -6,13 +6,10 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <optional>
 #include <regex>
 #include <string>
-#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -44,105 +41,6 @@ inline std::vector<std::string> extract_video_ids(const std::string& text) {
         if (seen.insert(id).second) ids.push_back(id);
     }
     return ids;
-}
-
-// ─── JSON extraction from YouTube watch page ────────────────────────────────
-//
-// The watch HTML contains a script block:
-//   var ytInitialPlayerResponse = {...};
-// We locate that JSON object by anchor, then walk braces (tracking string
-// context to ignore braces inside strings) until the matching close-brace.
-
-inline std::optional<std::string> extract_balanced_json(std::string_view html,
-                                                        std::string_view anchor) {
-    auto pos = html.find(anchor);
-    if (pos == std::string_view::npos) return std::nullopt;
-    pos = html.find('{', pos + anchor.size());
-    if (pos == std::string_view::npos) return std::nullopt;
-
-    int  depth     = 0;
-    bool in_string = false;
-    bool escape    = false;
-    for (size_t i = pos; i < html.size(); ++i) {
-        const char c = html[i];
-        if (in_string) {
-            if (escape)         escape = false;
-            else if (c == '\\') escape = true;
-            else if (c == '"')  in_string = false;
-        } else {
-            if      (c == '"') in_string = true;
-            else if (c == '{') ++depth;
-            else if (c == '}') {
-                if (--depth == 0) {
-                    return std::string(html.substr(pos, i - pos + 1));
-                }
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-// ─── JSON3 transcript parsing ───────────────────────────────────────────────
-
-// Parse the JSON3 caption format YouTube returns:
-//   { "events": [ { "segs": [ { "utf8": "Hello" }, ... ], ... }, ... ] }
-inline std::string parse_json3_transcript(const json& doc) {
-    std::string out;
-    if (!doc.contains("events") || !doc["events"].is_array()) return out;
-    out.reserve(8 * 1024);
-    for (const auto& ev : doc["events"]) {
-        if (!ev.contains("segs") || !ev["segs"].is_array()) continue;
-        for (const auto& seg : ev["segs"]) {
-            if (!seg.contains("utf8") || !seg["utf8"].is_string()) continue;
-            std::string text = seg["utf8"].get<std::string>();
-            std::replace(text.begin(), text.end(), '\n', ' ');
-            out += text;
-        }
-    }
-    // Collapse runs of whitespace introduced by the segment joining.
-    std::string collapsed;
-    collapsed.reserve(out.size());
-    bool prev_space = false;
-    for (char c : out) {
-        const bool is_space = (c == ' ' || c == '\t');
-        if (is_space) {
-            if (!prev_space && !collapsed.empty()) collapsed += ' ';
-            prev_space = true;
-        } else {
-            collapsed += c;
-            prev_space = false;
-        }
-    }
-    while (!collapsed.empty() && collapsed.back() == ' ') collapsed.pop_back();
-    return collapsed;
-}
-
-// Resolve the English caption track URL from a player response. Manual tracks
-// are preferred over ASR; any "en*" language code qualifies.
-inline std::optional<std::string> pick_english_track(const json& player) {
-    if (!player.contains("captions")) return std::nullopt;
-    const auto& tracklist = player["captions"]
-        .value("playerCaptionsTracklistRenderer", json::object());
-    if (!tracklist.contains("captionTracks") || !tracklist["captionTracks"].is_array())
-        return std::nullopt;
-
-    const json* manual = nullptr;
-    const json* asr    = nullptr;
-    for (const auto& t : tracklist["captionTracks"]) {
-        const std::string lang = t.value("languageCode", "");
-        if (lang.rfind("en", 0) != 0) continue;  // not English
-        const bool is_asr = (t.value("kind", "") == "asr");
-        if (is_asr) { if (!asr)    asr    = &t; }
-        else        { if (!manual) manual = &t; }
-    }
-    const json* pick = manual ? manual : asr;
-    if (!pick) return std::nullopt;
-    if (!pick->contains("baseUrl")) return std::nullopt;
-    std::string url = (*pick)["baseUrl"].get<std::string>();
-    // Force JSON3 format — easier to parse and unicode-safe.
-    url += (url.find('?') == std::string::npos ? '?' : '&');
-    url += "fmt=json3";
-    return url;
 }
 
 // ─── Cache key / path logic ─────────────────────────────────────────────────
