@@ -6,6 +6,7 @@
 #include "../src/ytdlp.hpp"
 #include "../src/proc.hpp"
 #include "../src/deps.hpp"
+#include "../src/cli.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -306,4 +307,45 @@ TEST_CASE("deps::update_due: missing stamp, fresh stamp, old stamp") {
         fs::file_time_type::clock::now() - std::chrono::hours(25));
     CHECK(deps::update_due(stamp) == true);           // stale
     fs::remove(stamp);
+}
+
+static bool fe_yes(const std::string&) { return true; }
+static bool fe_no(const std::string&)  { return false; }
+
+static cli::Args parse_vec(std::vector<std::string> v, cli::FileExistsFn fe) {
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>("ytmerge"));
+    for (auto& s : v) argv.push_back(const_cast<char*>(s.c_str()));
+    return cli::parse_args(static_cast<int>(argv.size()), argv.data(), fe);
+}
+
+TEST_CASE("parse_args: v2 flags") {
+    auto a = parse_vec({"--no-video", "--out", "mydir", "--workers", "8",
+                        "--update", "--mp3"}, &fe_no);
+    CHECK(a.no_video == true);
+    CHECK(a.out_dir == "mydir");
+    CHECK(a.workers == 8);
+    CHECK(a.do_update == true);
+    CHECK(a.mp3 == true);
+}
+
+TEST_CASE("parse_args: positional URL vs existing file") {
+    auto a = parse_vec({"https://youtu.be/dQw4w9WgXcQ"}, &fe_yes);
+    CHECK(a.urls.size() == 1);          // looks like a URL even though fe says file exists
+    CHECK(a.input_file.empty());
+
+    auto b = parse_vec({"links.txt"}, &fe_yes);
+    CHECK(b.input_file == "links.txt");
+    CHECK(b.urls.empty());
+
+    auto c = parse_vec({"random-text"}, &fe_no);
+    CHECK(c.urls.size() == 1);          // not a file -> treated as URL text
+}
+
+TEST_CASE("parse_args: v1 flags still work") {
+    auto a = parse_vec({"-", "--no-cache", "--proxy", "http://p:1"}, &fe_no);
+    CHECK(a.from_stdin == true);
+    CHECK(a.no_cache == true);
+    CHECK(a.proxy == "http://p:1");
+    CHECK(a.out_dir == "downloaded");   // default
 }
