@@ -1,18 +1,28 @@
 # ytmerge
 
-Copy YouTube URLs → press one keyboard shortcut → paste merged transcripts wherever you want them.
+Links in a text file → mp4s and AI-ready transcript documents out. One command.
 
-A small cross-platform CLI (macOS, Linux, Windows) for batching YouTube transcripts into a single copy-pasteable blob. Built for research-synthesis workflows — feeding many videos at once into Claude (or anything else) without manually opening each one.
+A small cross-platform CLI (macOS, Linux, Windows) that batch-fetches YouTube
+videos **and** their transcripts. For every URL it produces:
 
-Written in C++ (libcurl + nlohmann/json). Parallel by default. Rotates through a proxy pool when given one, so multi-IP setups can dodge YouTube's per-IP rate limit.
+- `downloaded/<title>.mp4` — the video (yt-dlp, best mp4+m4a)
+- `downloaded/<title>.txt` — full metadata header (title, channel, date,
+  duration, views, tags, chapters, description) + the complete transcript
+  with `[mm:ss]` timestamps
 
-## Why
+All transcripts are also merged onto the clipboard, ready to paste into
+Claude or any other LLM. All YouTube interaction goes through
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) (auto-downloaded on first run,
+self-updating daily), so ytmerge inherits its resilience to YouTube changes.
+Videos download in parallel (4 workers by default).
 
-Watching 15 videos to extract a few useful threads is slow. Pasting transcripts one at a time into an LLM is also slow. `ytmerge` collapses the in-between step into a single keyboard shortcut:
+## Quick start
 
-1. Copy a batch of URLs from anywhere — browser tabs, notes, chat messages, scratchpad. Messy text is fine.
-2. Press your bound shortcut.
-3. Paste the merged transcripts wherever you're going to use them.
+```bash
+# put any text containing YouTube links into links.txt, then:
+ytmerge links.txt
+# or just `ytmerge` — clipboard URLs, falling back to ./links.txt
+```
 
 ## Install
 
@@ -88,16 +98,21 @@ cat urls.txt | ytmerge -             # 3. stdin (the `-` is required)
 ## Options
 
 ```
+--no-video           transcripts + metadata only (no download)
+--audio              audio-only download (best available format)
+--mp3                audio-only download, converted to mp3
+--out DIR            output directory (default: downloaded)
+--workers N          parallel workers (default 4)
 --proxy URL          single proxy for all requests
 --proxy-list FILE    one proxy per line; round-robin with cooldown on 429
---workers N          parallel workers (default 4)
---no-cache           skip the disk cache for this run
--h, --help           usage
+--no-cache           skip disk cache for this run
+--update             force a yt-dlp self-update check now
+-h, --help           this message
 ```
 
 ## Rate limits and proxies
 
-YouTube rate-limits its captions endpoint per source IP. From one home IP you can typically fetch dozens of transcripts without issue, but enough repeated runs in a short window will trigger HTTP 429. When that happens `ytmerge` reports it explicitly:
+YouTube rate-limits its captions endpoint per source IP. All caption fetches go through [yt-dlp](https://github.com/yt-dlp/yt-dlp) now, which inherits YouTube's resilience patterns — but the per-IP 429 ceiling on the timedtext endpoint still exists. From one home IP you can typically fetch dozens of transcripts without issue, but enough repeated runs in a short window will trigger HTTP 429. When that happens `ytmerge` reports it explicitly:
 
 ```
 [1/1] InH25PzMqpk  FAIL: ip blocked (429)
@@ -167,24 +182,35 @@ Two approaches:
 
 ## Output format
 
-Each video becomes a header block followed by its transcript:
+Each video produces `downloaded/<title>.txt` with a full metadata header followed by a timestamped transcript:
 
 ```
 ================================================================================
-TITLE: The video's actual title
-URL:   https://www.youtube.com/watch?v=...
+TITLE:    The video's actual title
+CHANNEL:  Channel Name
+DATE:     2026-08-05
+DURATION: 12:34
+VIEWS:    45000        LIKES: 1200
+URL:      https://www.youtube.com/watch?v=...
+TAGS:     python, tutorial, coding
+CHAPTERS: [0:00] Intro | [2:15] Setup | [6:45] Main demo
+
+DESCRIPTION:
+Full video description text here...
 ================================================================================
 
-[full transcript as one paragraph]
+[0:00] Intro text here.
+[0:45] More content.
+[2:15] Setup section begins...
 ```
 
-Multiple videos are separated by blank lines. Clear delimiters help downstream LLMs attribute insights to the right source instead of blurring everything together.
+When using clipboard mode (default), all transcripts from the batch are merged and placed on the clipboard, each separated by a blank line. Clear delimiters help downstream LLMs attribute insights to the right source.
 
 ## Notes
 
 - URL parser is forgiving. Paste anything containing YouTube links and it'll extract them. Duplicates are deduped. Supports `youtube.com/watch`, `youtu.be`, `youtube.com/shorts`, `youtube.com/embed`.
 - Output ordering follows input ordering (deterministic, independent of which worker finishes first).
-- The C++ binary picks up `HTTPS_PROXY` / `ALL_PROXY` env vars automatically (libcurl default behavior) — `--proxy` overrides them.
+- Both the C++ binary (for downloading yt-dlp) and yt-dlp itself (for fetches) pick up `HTTPS_PROXY` / `ALL_PROXY` env vars automatically — `--proxy` overrides them.
 - **Platform support:** macOS, Linux (X11 via `xclip` or Wayland via `wl-copy`), and Windows (Win32 clipboard API, no native toast). Clipboard and notification are the only OS-specific surfaces; everything else (HTTP, parsing, threading, cache) is plain C++20.
 
 ## License

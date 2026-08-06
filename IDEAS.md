@@ -10,6 +10,10 @@ Design notes for features that have been considered but not built. Captured here
 
 ### The problem
 
+> **v2 note (2026-08):** ytmerge now fetches captions via yt-dlp rather than
+> hand-rolled timedtext calls; the per-IP 429 ceiling still exists but breakage
+> from YouTube-side changes is now yt-dlp's problem, not ours.
+
 `youtube-transcript-api` and every other client (including `yt-dlp`) ultimately fetch caption data from `https://www.youtube.com/api/timedtext`. YouTube rate-limits this endpoint per source IP. When the limit trips, every video in the run fails with `IpBlocked` — currently surfaced as the misleading "no captions available."
 
 There is no `Retry-After` header on the 429, no documented threshold, and no way to query "am I unblocked yet?" without making a request (which itself counts). Blocks lift in minutes to hours.
