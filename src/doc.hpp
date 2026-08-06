@@ -62,4 +62,58 @@ inline std::string format_duration(long long s) {
     return buf;
 }
 
+// The per-video text document: 80-char '=' divider, aligned header fields,
+// blank line, transcript body. Format is spec'd in the v2 design doc.
+inline std::string compose_document(const VideoMeta& m,
+                                    const std::string& transcript_text) {
+    static const std::string DIV(80, '=');
+    std::ostringstream o;
+    o << DIV << '\n'
+      << "TITLE:    " << m.title << '\n'
+      << "CHANNEL:  " << m.channel << '\n';
+    if (!m.upload_date.empty()) o << "DATE:     " << m.upload_date << '\n';
+    if (m.duration_s > 0)       o << "DURATION: " << format_duration(m.duration_s) << '\n';
+    if (m.view_count >= 0) {
+        o << "VIEWS:    " << m.view_count;
+        if (m.like_count >= 0) o << "    LIKES: " << m.like_count;
+        o << '\n';
+    }
+    o << "URL:      https://www.youtube.com/watch?v=" << m.id << '\n';
+    if (!m.tags.empty()) {
+        o << "TAGS:     ";
+        for (size_t i = 0; i < m.tags.size(); ++i) {
+            if (i) o << ", ";
+            o << m.tags[i];
+        }
+        o << '\n';
+    }
+    if (!m.chapters.empty()) {
+        o << "CHAPTERS: ";
+        for (size_t i = 0; i < m.chapters.size(); ++i) {
+            if (i) o << " | ";
+            o << transcript::format_timestamp(m.chapters[i].start_s)
+              << ' ' << m.chapters[i].title;
+        }
+        o << '\n';
+    }
+    if (!m.description.empty())
+        o << "\nDESCRIPTION:\n" << m.description << '\n';
+    o << DIV << "\n\n";
+    o << (transcript_text.empty() ? "(no transcript available)" : transcript_text)
+      << '\n';
+    return o.str();
+}
+
+// Recover the title from a composed document (used to name .txt files
+// restored from cache). Returns "" if no TITLE line is present.
+inline std::string extract_title(const std::string& document) {
+    const std::string key = "TITLE:    ";
+    size_t pos = document.find(key);
+    if (pos == std::string::npos) return "";
+    pos += key.size();
+    size_t end = document.find('\n', pos);
+    if (end == std::string::npos) end = document.size();
+    return document.substr(pos, end - pos);
+}
+
 }  // namespace doc

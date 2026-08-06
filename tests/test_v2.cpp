@@ -125,3 +125,43 @@ TEST_CASE("format_duration") {
     CHECK(doc::format_duration(75)   == "1:15");
     CHECK(doc::format_duration(3675) == "1:01:15");
 }
+
+TEST_CASE("compose_document: full header, chapters line, transcript body") {
+    doc::VideoMeta m;
+    m.id = "abc123def45"; m.title = "My Title"; m.channel = "Chan";
+    m.upload_date = "2026-08-05"; m.duration_s = 75;
+    m.view_count = 10; m.like_count = 2;
+    m.tags = {"x", "y"};
+    m.chapters = {{0.0, "Intro"}, {30.0, "End"}};
+    m.description = "desc here";
+    auto d = doc::compose_document(m, "[0:00] hello");
+    CHECK(d.find("TITLE:    My Title") != std::string::npos);
+    CHECK(d.find("CHANNEL:  Chan") != std::string::npos);
+    CHECK(d.find("DATE:     2026-08-05") != std::string::npos);
+    CHECK(d.find("DURATION: 1:15") != std::string::npos);
+    CHECK(d.find("VIEWS:    10    LIKES: 2") != std::string::npos);
+    CHECK(d.find("URL:      https://www.youtube.com/watch?v=abc123def45") != std::string::npos);
+    CHECK(d.find("TAGS:     x, y") != std::string::npos);
+    CHECK(d.find("CHAPTERS: [0:00] Intro | [0:30] End") != std::string::npos);
+    CHECK(d.find("DESCRIPTION:\ndesc here") != std::string::npos);
+    CHECK(d.find("[0:00] hello") != std::string::npos);
+}
+
+TEST_CASE("compose_document: minimal metadata, missing transcript") {
+    doc::VideoMeta m;
+    m.id = "abc123def45"; m.title = "T";
+    auto d = doc::compose_document(m, "");
+    CHECK(d.find("(no transcript available)") != std::string::npos);
+    CHECK(d.find("DATE:") == std::string::npos);
+    CHECK(d.find("VIEWS:") == std::string::npos);
+    CHECK(d.find("TAGS:") == std::string::npos);
+    CHECK(d.find("CHAPTERS:") == std::string::npos);
+    CHECK(d.find("DESCRIPTION:") == std::string::npos);
+}
+
+TEST_CASE("extract_title round-trips compose_document") {
+    doc::VideoMeta m;
+    m.id = "abc123def45"; m.title = "Round Trip";
+    CHECK(doc::extract_title(doc::compose_document(m, "t")) == "Round Trip");
+    CHECK(doc::extract_title("no header here").empty());
+}
