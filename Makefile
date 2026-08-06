@@ -56,7 +56,7 @@ endif
 BIN      := ytmerge
 SRC      := src/ytmerge.cpp
 TEST_BIN := ytmerge_tests
-TEST_SRC := tests/test_core.cpp
+TEST_SRC := tests/test_core.cpp tests/test_v2.cpp
 
 all: $(BIN)
 
@@ -66,7 +66,7 @@ $(BIN): $(SRC)
 # The unit tests cover only the pure logic in src/core.hpp, so they need
 # neither libcurl nor any platform LDFLAGS — just the C++ standard library and
 # the vendored headers. This target builds anywhere `make` and a compiler exist.
-$(TEST_BIN): $(TEST_SRC) src/core.hpp tests/doctest.h
+$(TEST_BIN): $(TEST_SRC) src/core.hpp src/transcript.hpp tests/doctest.h
 	$(CXX) $(CXXFLAGS) -o $@ $(TEST_SRC)
 
 test: $(TEST_BIN)
