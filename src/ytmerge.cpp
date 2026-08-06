@@ -690,9 +690,10 @@ int main(int argc, char** argv) {
 
     if (!args.no_cache) cache_evict_old();
 
-    // Slots + cache pass. A cache hit still needs the media file: skip the
-    // whole video only when its .txt already materialized AND --no-video, or
-    // let phase 2 run standalone otherwise.
+    // Slots + cache pass. A cache hit still needs the media file (unless
+    // --no-video) and the .txt must be re-materialized into args.out_dir
+    // every run, so every video is queued; process_video is skipped for
+    // cached docs.
     struct Slot { std::string id; VideoOutcome outcome; bool from_cache = false; };
     std::vector<Slot> results(ids.size());
     WorkQueue q;
@@ -707,14 +708,10 @@ int main(int argc, char** argv) {
                 results[i].from_cache = true;
                 std::cerr << "  [" << (i + 1) << "/" << ids.size() << "] "
                           << ids[i] << "  (cache)\n";
-                // fall through: still queued unless --no-video, so the mp4
-                // gets downloaded; process_video is skipped for cached docs.
             }
         }
-        if (!results[i].from_cache || !args.no_video) {
-            q.push({i, ids[i]});
-            ++queued;
-        }
+        q.push({i, ids[i]});
+        ++queued;
     }
 
     const int n_workers = std::max(
@@ -728,17 +725,30 @@ int main(int argc, char** argv) {
                 if (!job) return;
                 Slot& slot = results[job->index];
                 if (slot.from_cache) {
-                    // Cached doc: only the media download remains. No
-                    // info.json on disk — download_cmd falls back to the URL.
-                    auto dl = proc::run(
-                        ytdlp::download_cmd(ytdlp_path->string(), slot.id, "",
-                                            args.out_dir, fmt,
-                                            args.audio || args.mp3,
-                                            args.mp3 ? "mp3" : "",
-                                            pool.next()),
-                        1800);
-                    if (dl.timed_out || dl.exit_code != 0)
-                        slot.outcome.video_note = "video download failed";
+                    // Cached doc: only the media download remains (skipped
+                    // under --no-video). No info.json on disk — download_cmd
+                    // falls back to the URL.
+                    if (!args.no_video) {
+                        auto dl = proc::run(
+                            ytdlp::download_cmd(ytdlp_path->string(), slot.id, "",
+                                                args.out_dir, fmt,
+                                                args.audio || args.mp3,
+                                                args.mp3 ? "mp3" : "",
+                                                pool.next()),
+                            1800);
+                        if (dl.timed_out || dl.exit_code != 0)
+                            slot.outcome.video_note = "video download failed";
+                    }
+                    // The .txt must be re-materialized into out_dir every
+                    // run, mirroring process_video's standalone naming.
+                    std::error_code ec;
+                    fs::create_directories(args.out_dir, ec);
+                    const fs::path doc_path = fs::path(args.out_dir)
+                        / (ytdlp::sanitize_filename(slot.outcome.title.empty() ? slot.id
+                                                                               : slot.outcome.title)
+                           + ".txt");
+                    std::ofstream f(doc_path, std::ios::trunc | std::ios::binary);
+                    if (f) f << slot.outcome.document;
                 } else {
                     slot.outcome = process_video(ytdlp_path->string(), slot.id,
                                                  args, pool, fmt);
