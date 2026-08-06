@@ -117,6 +117,9 @@ inline Result run(const std::vector<std::string>& argv, int timeout_s = 1800) {
     if (hOut == INVALID_HANDLE_VALUE || hErr == INVALID_HANDLE_VALUE) {
         if (hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
         if (hErr != INVALID_HANDLE_VALUE) CloseHandle(hErr);
+        std::error_code ec;
+        fs::remove(out_p, ec);
+        fs::remove(err_p, ec);
         return r;
     }
     std::wstring cmdline;
@@ -164,12 +167,17 @@ inline Result run(const std::vector<std::string>& argv, int timeout_s = 1800) {
     if (out_fd < 0 || err_fd < 0) {
         if (out_fd >= 0) ::close(out_fd);
         if (err_fd >= 0) ::close(err_fd);
+        std::error_code ec;
+        fs::remove(out_p, ec);
+        fs::remove(err_p, ec);
         return r;
     }
     pid_t pid = ::fork();
     if (pid == 0) {
         ::dup2(out_fd, 1);
         ::dup2(err_fd, 2);
+        ::close(out_fd);
+        ::close(err_fd);
         std::vector<char*> cargv;
         cargv.reserve(argv.size() + 1);
         for (const auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
@@ -179,7 +187,12 @@ inline Result run(const std::vector<std::string>& argv, int timeout_s = 1800) {
     }
     ::close(out_fd);
     ::close(err_fd);
-    if (pid < 0) return r;
+    if (pid < 0) {
+        std::error_code ec;
+        fs::remove(out_p, ec);
+        fs::remove(err_p, ec);
+        return r;
+    }
     int status = 0;
     const auto deadline = std::chrono::steady_clock::now()
                           + std::chrono::seconds(timeout_s);
