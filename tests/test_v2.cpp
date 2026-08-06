@@ -54,3 +54,32 @@ TEST_CASE("parse_json3_cues: missing/empty events array") {
     CHECK(transcript::parse_json3_cues(json::object()).empty());
     CHECK(transcript::parse_json3_cues(json::parse(R"({"events": []})")).empty());
 }
+
+TEST_CASE("format_timestamp: under and over an hour") {
+    CHECK(transcript::format_timestamp(0.0)    == "[0:00]");
+    CHECK(transcript::format_timestamp(75.4)   == "[1:15]");
+    CHECK(transcript::format_timestamp(600.0)  == "[10:00]");
+    CHECK(transcript::format_timestamp(3675.0) == "[1:01:15]");
+}
+
+TEST_CASE("render_transcript: paragraph break at interval") {
+    std::vector<transcript::Cue> cues = {
+        {0.0,  "one"}, {10.0, "two"}, {50.0, "three"}, {60.0, "four"},
+    };
+    // interval 45s: cue at 50s starts a new paragraph (50-0 >= 45)
+    auto out = transcript::render_transcript(cues, {}, 45.0);
+    CHECK(out == "[0:00] one two\n\n[0:50] three four");
+}
+
+TEST_CASE("render_transcript: chapter boundary forces paragraph break") {
+    std::vector<transcript::Cue> cues = {
+        {0.0, "intro words"}, {5.0, "more intro"}, {30.0, "chapter two starts"},
+    };
+    std::vector<transcript::Chapter> ch = {{0.0, "Intro"}, {30.0, "Part Two"}};
+    auto out = transcript::render_transcript(cues, ch, 4500.0);
+    CHECK(out == "[0:00] intro words more intro\n\n[0:30] chapter two starts");
+}
+
+TEST_CASE("render_transcript: empty cues") {
+    CHECK(transcript::render_transcript({}, {}, 45.0).empty());
+}
