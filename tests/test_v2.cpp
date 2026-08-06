@@ -5,7 +5,10 @@
 #include "../src/doc.hpp"
 #include "../src/ytdlp.hpp"
 #include "../src/proc.hpp"
+#include "../src/deps.hpp"
 
+#include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -250,4 +253,57 @@ TEST_CASE("proc::run: nonexistent binary yields nonzero exit") {
 TEST_CASE("proc::run: timeout kills the child") {
     auto r = proc::run({"sh", "-c", "sleep 30"}, 1);
     CHECK(r.timed_out == true);
+}
+
+static const char* fake_env_home(const char* name) {
+    if (std::string(name) == "HOME")         return "/home/tester";
+    if (std::string(name) == "USERPROFILE")  return "C:\\Users\\tester";
+    if (std::string(name) == "LOCALAPPDATA") return "C:\\Users\\tester\\AppData\\Local";
+    return nullptr;
+}
+
+TEST_CASE("deps::bin_dir hangs off the cache dir") {
+    auto d = deps::bin_dir(&fake_env_home);
+    CHECK(d.filename() == "bin");
+    CHECK(d.parent_path() == core::cache_dir(&fake_env_home));
+}
+
+TEST_CASE("deps::ytdlp_download_url points at the latest-release asset") {
+    auto u = deps::ytdlp_download_url();
+    CHECK(u.rfind("https://github.com/yt-dlp/yt-dlp/releases/latest/download/", 0) == 0);
+}
+
+TEST_CASE("deps::find_on_path finds an executable in an injected PATH") {
+    namespace fs = std::filesystem;
+    auto dir = fs::temp_directory_path() / "ytmerge_deps_test";
+    fs::create_directories(dir);
+#if defined(_WIN32)
+    auto exe = dir / "fakeexe.exe";
+#else
+    auto exe = dir / "fakeexe";
+#endif
+    { std::ofstream f(exe); f << "x"; }
+    static std::string path_value;          // static so the lambda-free fn can see it
+    path_value = dir.string();
+    core::GetEnvFn fake_path = [](const char* n) -> const char* {
+        return std::string(n) == "PATH" ? path_value.c_str() : nullptr;
+    };
+    auto found = deps::find_on_path("fakeexe", fake_path);
+    REQUIRE(found.has_value());
+    CHECK(found->parent_path() == dir);
+    CHECK(!deps::find_on_path("no-such-exe-zzz", fake_path).has_value());
+    fs::remove_all(dir);
+}
+
+TEST_CASE("deps::update_due: missing stamp, fresh stamp, old stamp") {
+    namespace fs = std::filesystem;
+    auto stamp = fs::temp_directory_path() / "ytmerge_stamp_test";
+    fs::remove(stamp);
+    CHECK(deps::update_due(stamp) == true);           // missing
+    { std::ofstream f(stamp); f << "x"; }
+    CHECK(deps::update_due(stamp) == false);          // just written
+    fs::last_write_time(stamp,
+        fs::file_time_type::clock::now() - std::chrono::hours(25));
+    CHECK(deps::update_due(stamp) == true);           // stale
+    fs::remove(stamp);
 }
