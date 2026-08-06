@@ -3,6 +3,7 @@
 
 #include "../src/transcript.hpp"
 #include "../src/doc.hpp"
+#include "../src/ytdlp.hpp"
 
 #include <string>
 #include <vector>
@@ -164,4 +165,70 @@ TEST_CASE("extract_title round-trips compose_document") {
     m.id = "abc123def45"; m.title = "Round Trip";
     CHECK(doc::extract_title(doc::compose_document(m, "t")) == "Round Trip");
     CHECK(doc::extract_title("no header here").empty());
+}
+
+TEST_CASE("classify_stderr") {
+    using E = ytdlp::Err;
+    CHECK(ytdlp::classify_stderr("ERROR: ... HTTP Error 429: Too Many Requests") == E::IpBlocked);
+    CHECK(ytdlp::classify_stderr("ERROR: [youtube] xyz: Private video.") == E::Unavailable);
+    CHECK(ytdlp::classify_stderr("ERROR: [youtube] xyz: Video unavailable") == E::Unavailable);
+    CHECK(ytdlp::classify_stderr("ERROR: unable to download webpage (timed out)") == E::Network);
+    CHECK(ytdlp::classify_stderr("something novel") == E::Network);
+}
+
+TEST_CASE("sanitize_filename strips path-illegal characters") {
+    CHECK(ytdlp::sanitize_filename("a/b\\c:d*e?f\"g<h>i|j") == "a_b_c_d_e_f_g_h_i_j");
+    CHECK(ytdlp::sanitize_filename("trailing dots.. ") == "trailing dots");
+    CHECK(ytdlp::sanitize_filename("") == "untitled");
+}
+
+TEST_CASE("metadata_cmd: skip-download subs+info fetch keyed by id") {
+    auto c = ytdlp::metadata_cmd("/bin/yt-dlp", "abc123def45", "/tmp/work", "");
+    CHECK(c[0] == "/bin/yt-dlp");
+    CHECK(c[1] == "https://www.youtube.com/watch?v=abc123def45");
+    auto has = [&](const std::string& s) {
+        for (const auto& a : c) if (a == s) return true;
+        return false;
+    };
+    CHECK(has("--skip-download"));
+    CHECK(has("--write-info-json"));
+    CHECK(has("--write-subs"));
+    CHECK(has("--write-auto-subs"));
+    CHECK(has("en.*,en"));
+    CHECK(has("json3"));
+    CHECK(has("%(id)s.%(ext)s"));
+    CHECK(!has("--proxy"));
+}
+
+TEST_CASE("download_cmd: load-info-json + print filepath, proxy passthrough") {
+    auto c = ytdlp::download_cmd("yt-dlp", "abc123def45", "/w/abc.info.json",
+                                 "downloaded", ytdlp::FORMAT_MERGED,
+                                 false, "", "http://p:1");
+    auto has = [&](const std::string& s) {
+        for (const auto& a : c) if (a == s) return true;
+        return false;
+    };
+    CHECK(has("--load-info-json"));
+    CHECK(has("/w/abc.info.json"));
+    CHECK(has("--no-simulate"));           // --print alone implies simulate
+    CHECK(has("after_move:filepath"));
+    CHECK(has(ytdlp::FORMAT_MERGED));
+    CHECK(has("--windows-filenames"));
+    CHECK(has("--proxy"));
+    CHECK(has("http://p:1"));
+    CHECK(!has("--extract-audio"));
+}
+
+TEST_CASE("download_cmd: audio mode replaces format with extract-audio") {
+    auto c = ytdlp::download_cmd("yt-dlp", "abc123def45", "", "out",
+                                 ytdlp::FORMAT_MERGED, true, "mp3", "");
+    auto has = [&](const std::string& s) {
+        for (const auto& a : c) if (a == s) return true;
+        return false;
+    };
+    CHECK(has("--extract-audio"));
+    CHECK(has("mp3"));
+    CHECK(!has("--format"));
+    // no info.json given -> falls back to the URL
+    CHECK(has("https://www.youtube.com/watch?v=abc123def45"));
 }
