@@ -4,6 +4,7 @@
 #include "../src/transcript.hpp"
 #include "../src/doc.hpp"
 #include "../src/ytdlp.hpp"
+#include "../src/proc.hpp"
 
 #include <string>
 #include <vector>
@@ -231,4 +232,22 @@ TEST_CASE("download_cmd: audio mode replaces format with extract-audio") {
     CHECK(!has("--format"));
     // no info.json given -> falls back to the URL
     CHECK(has("https://www.youtube.com/watch?v=abc123def45"));
+}
+
+TEST_CASE("proc::run captures stdout, stderr, and exit code") {
+    auto r = proc::run({"sh", "-c", "echo out-line; echo err-line 1>&2; exit 3"}, 30);
+    CHECK(r.timed_out == false);
+    CHECK(r.exit_code == 3);
+    CHECK(r.out.find("out-line") != std::string::npos);
+    CHECK(r.err.find("err-line") != std::string::npos);
+}
+
+TEST_CASE("proc::run: nonexistent binary yields nonzero exit") {
+    auto r = proc::run({"definitely-not-a-real-binary-xyz"}, 30);
+    CHECK(r.exit_code != 0);
+}
+
+TEST_CASE("proc::run: timeout kills the child") {
+    auto r = proc::run({"sh", "-c", "sleep 30"}, 1);
+    CHECK(r.timed_out == true);
 }
