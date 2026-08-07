@@ -14,3 +14,6 @@ build/
 # macOS
 .DS_Store
 dist/
+ytmerge.exe
+ytmerge_tests.exe
+.superpowers/
