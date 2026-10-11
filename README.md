@@ -2,6 +2,8 @@
 
 Links in a text file → mp4s and AI-ready transcript documents out. One command.
 
+**On a Mac? Use the [web UI](#web-ui--httplocalhost8765-easiest-on-a-mac): `./ytmerge-web` → http://localhost:8765 — no build needed.**
+
 A small cross-platform CLI (macOS, Linux, Windows) that batch-fetches YouTube
 videos **and** their transcripts. For every URL it produces:
 
@@ -24,7 +26,62 @@ ytmerge links.txt
 # or just `ytmerge` — clipboard URLs, falling back to ./links.txt
 ```
 
-## Install
+## Web UI — http://localhost:8765 (easiest on a Mac)
+
+No compiler, no build: a small Python server (standard library only) plus a
+single page, running on your own machine. Paste a pile of links, get every
+transcript, copy them all with one click, download any video or its audio.
+
+```bash
+git clone https://github.com/mal0ware/ytmerge.git
+cd ytmerge
+./ytmerge-web            # opens http://localhost:8765
+```
+
+What you get on the page:
+
+- **Paste anything** containing YouTube links (one per line, a chat log, a
+  doc) into the box — pasting starts the fetch. `⌘↵` also submits, and
+  **Paste from clipboard & go** skips the box entirely.
+- Per video: **Copy transcript**, **Video** (mp4), **Audio** (m4a), **.txt**,
+  a collapsible preview, and ↻ to refetch.
+- For the whole batch: **Copy all transcripts** (auto-copied to the clipboard
+  when a batch finishes; untick *Auto-copy* to stop that), **Download all
+  videos**, **All audio**, **Save all as .txt**.
+- Same transcript format and the same `~/.cache/ytmerge` cache as the CLI.
+  Videos/audio land in your browser's Downloads folder.
+- `http://localhost:8765/?q=<links>` opens the page pre-loaded, handy for a
+  bookmarklet or a Shortcut.
+
+### macOS setup, once
+
+1. **python3** — already there if you have Xcode Command Line Tools
+   (`xcode-select --install`) or a python.org install.
+2. **ffmpeg** — required for video downloads (YouTube serves video and audio
+   as separate streams that ffmpeg joins). Transcripts and audio work without it.
+   ```bash
+   brew install ffmpeg deno   # deno: JS runtime yt-dlp uses to see every format
+   ```
+   If brew complains about the Xcode license, run `sudo xcodebuild -license accept` first.
+3. yt-dlp downloads itself into `~/.cache/ytmerge/bin` on first run and
+   self-updates daily (a `brew install yt-dlp` is used instead if present).
+
+### Use it quickly
+
+- **Always on (recommended):** `./ytmerge-web install` registers a
+  LaunchAgent so the server starts at login and restarts if it dies. Then just
+  bookmark **http://localhost:8765** (or add it to the Dock from Safari:
+  *File → Add to Dock*). `./ytmerge-web uninstall` removes it. Log:
+  `~/Library/Logs/ytmerge-web.log`.
+- **On demand:** add `alias ytm="$HOME/path/to/ytmerge/ytmerge-web"` to
+  `~/.zshrc`; `ytm` starts it and opens the tab (re-running it while it is up
+  just opens the tab). `Ctrl+C` stops it.
+- Change the port with `YTMERGE_PORT=9000 ./ytmerge-web`.
+
+The server only listens on 127.0.0.1 and rejects requests from other sites, so
+nothing on your network or the web can drive it.
+
+## Install (CLI)
 
 ### macOS and Linux
 
