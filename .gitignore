@@ -17,3 +17,5 @@ dist/
 ytmerge.exe
 ytmerge_tests.exe
 .superpowers/
+
+__pycache__/

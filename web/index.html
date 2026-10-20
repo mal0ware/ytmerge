@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ytmerge</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e5484d'/><path d='M12 9.5v13l11-6.5z' fill='white'/></svg>">
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --ink: #1b1b1a; --muted: #6b6a66; --line: #e3e2de;
+    --accent: #e5484d; --accent-ink: #fff; --ok: #2f8f5b; --warn: #b7791f; --err: #c43c3c;
+    --chip: #efeeea; --focus: #e5484d55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1e1e1c; --ink: #ecebe7; --muted: #9b9a95; --line: #2f2f2c;
+            --chip: #2a2a27; --ok: #4fbf84; --warn: #e0a94a; --err: #ef6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 28px 16px 80px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; }
+  .pill { margin-left: auto; font-size: 12px; color: var(--muted); background: var(--chip);
+          padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+  textarea { width: 100%; min-height: 96px; resize: vertical; padding: 12px 14px; border-radius: 12px;
+             border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+             font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  textarea:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button { font: inherit; font-size: 13.5px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+           padding: 7px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.07); border-color: var(--accent); }
+  kbd { font: 11px ui-monospace, Menlo, monospace; opacity: .8; margin-left: 4px; }
+  label.check { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .spacer { flex: 1; }
+  .bar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 12px 0 10px; margin-top: 18px;
+         border-bottom: 1px solid var(--line); }
+  .summary { font-size: 13px; color: var(--muted); }
+  ul.list { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 10px; }
+  li.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+            display: grid; grid-template-columns: 136px 1fr; gap: 12px; }
+  .thumb { width: 136px; aspect-ratio: 16/9; border-radius: 8px; background: var(--chip) center/cover no-repeat; display: block; }
+  .meta { min-width: 0; }
+  .title { font-weight: 600; color: var(--ink); text-decoration: none; display: block;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title:hover { text-decoration: underline; }
+  .info { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .status { font-size: 12.5px; margin-top: 2px; }
+  .status.done { color: var(--ok); } .status.error { color: var(--err); } .status.busy { color: var(--warn); }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .actions button { padding: 5px 10px; font-size: 12.5px; }
+  .prog { position: relative; overflow: hidden; }
+  .prog i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: .18; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  pre { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; margin: 6px 0 0;
+        background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+        font: 12px/1.5 ui-monospace, Menlo, monospace; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
+  /* Markers (opt-in): pin = later, new = not looked at yet, done = finished */
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .filters[hidden] { display: none; }
+  .filters button { padding: 3px 10px; font-size: 12px; border-radius: 99px; color: var(--muted); }
+  .filters button.on { color: var(--ink); border-color: var(--ink); }
+  .marks { display: inline-flex; gap: 4px; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--line); }
+  .marks button { padding: 5px 8px; color: var(--muted); }
+  .marks button.on { color: var(--ink); border-color: var(--mk); background: color-mix(in srgb, var(--mk) 16%, var(--panel)); }
+  li.card.m-pin  { --mk: var(--accent); box-shadow: inset 3px 0 0 var(--mk); }
+  li.card.m-new  { --mk: #3b82f6;       box-shadow: inset 3px 0 0 var(--mk); }
+  li.card.m-done { --mk: var(--ok); }
+  li.card.m-done .thumb, li.card.m-done .title, li.card.m-done .info { opacity: .5; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; color: var(--mk); margin-right: 6px; }
+  /* Dividers + drag. Day lines appear on their own; named dividers are added by the user. */
+  li.card { position: relative; }
+  li.card .meta { padding-right: 18px; }
+  .grip { position: absolute; top: 6px; right: 8px; padding: 2px 5px; cursor: grab; color: var(--muted);
+          opacity: 0; user-select: none; font-size: 15px; line-height: 1; transition: opacity .15s; }
+  li:hover > .grip { opacity: .75; }
+  @media (hover: none) { .grip { opacity: .5; } }
+  li.dragging { opacity: .35; }
+  li.drop-before { box-shadow: 0 -3px 0 0 var(--accent) !important; }
+  li.drop-after  { box-shadow: 0 3px 0 0 var(--accent) !important; }
+  li.day { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 4px 2px -2px; }
+  li.day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  li.divider { position: relative; display: flex; align-items: center; gap: 8px; padding: 12px 0 0; }
+  li.divider .grip { position: static; }
+  li.divider .line { flex: 1; height: 2px; border-radius: 2px; background: var(--line); }
+  .dname { font: inherit; font-size: 14.5px; font-weight: 650; color: var(--ink); background: transparent;
+           border: 1px solid transparent; border-radius: 6px; padding: 2px 6px; field-sizing: content; min-width: 10ch; max-width: 70%; }
+  .dname:hover { border-color: var(--line); }
+  .dname:focus { outline: none; border-color: var(--muted); background: var(--panel); }
+  .dcount { color: var(--muted); font-size: 12px; }
+  li.divider button { padding: 2px 8px; font-size: 12px; opacity: 0; }
+  li.divider:hover button, li.divider button:focus-visible { opacity: 1; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0;
+           background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 13.5px;
+           transition: .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  @media (max-width: 560px) {
+    li.card { grid-template-columns: 1fr; }
+    .thumb { width: 100%; }
+    .pill { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>yt<span>merge</span></h1>
+    <span class="sub">links in → videos &amp; transcripts out</span>
+    <span class="pill" id="pill">local · 127.0.0.1</span>
+  </header>
+
+  <textarea id="input" spellcheck="false"
+    placeholder="Paste anything containing YouTube links — one per line, a whole chat log, whatever. Pasting starts the fetch."></textarea>
+  <div class="row">
+    <button class="primary" id="go">Get transcripts<kbd>⌘↵</kbd></button>
+    <button id="pasteGo" title="Read links from your clipboard and fetch">Paste from clipboard &amp; go</button>
+    <button id="tabsGo" title="Fetch every YouTube video open in your browser's tabs">Grab my YouTube tabs</button>
+    <span class="spacer"></span>
+    <label class="check" title="Mark videos as pinned, new or done — pinned float to the top, done sink to the bottom"><input type="checkbox" id="markers"> Markers</label>
+    <label class="check"><input type="checkbox" id="autocopy"> Auto-copy all when done</label>
+  </div>
+
+  <div class="bar" id="bar" hidden>
+    <div class="row" style="margin-top:0">
+      <span class="summary" id="summary"></span>
+      <span class="spacer"></span>
+      <button id="copyAll">Copy all transcripts</button>
+      <button id="dlAllVideo">Download all videos</button>
+      <button id="dlAllAudio">All audio</button>
+      <button id="saveAll">Save all as .txt</button>
+      <button id="addDiv" title="Add a named divider to group related videos — drag it (or videos) to where you want">+ Divider</button>
+      <button id="clear" title="Clear the list">Clear</button>
+    </div>
+    <div class="filters" id="filters" hidden></div>
+  </div>
+
+  <ul class="list" id="list"></ul>
+  <div class="empty" id="empty">No videos yet. Paste some links above.</div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+let ids = store.get("ytmerge.ids", []);
+let videos = {};          // id -> server state
+let downloads = {};       // "id:kind" -> server state
+const wanted = new Set(); // "id:kind" downloads the user asked for and hasn't received yet
+let pollTimer = null, autoCopyArmed = false, ffmpeg = true;
+
+$("autocopy").checked = store.get("ytmerge.autocopy", true);
+
+// Markers are opt-in: with them off the list looks and orders exactly as before.
+const MARKS = {
+  pin:  { label: "📌 Pin",  badge: "Pinned", title: "Pin to the top for later" },
+  new:  { label: "● New",   badge: "New",    title: "Not looked at yet" },
+  done: { label: "✓ Done",  badge: "Done",   title: "Finished — sinks to the bottom" },
+};
+let marks = store.get("ytmerge.marks", {});   // id -> "pin" | "new" | "done"
+let filter = "all";
+$("markers").checked = store.get("ytmerge.markers", false);
+$("markers").onchange = (e) => { store.set("ytmerge.markers", e.target.checked); filter = "all"; render(); };
+const markersOn = () => $("markers").checked;
+const saveMarks = () => store.set("ytmerge.marks", marks);
+function forget(gone) {
+  for (const i of gone) { delete marks[i]; delete added[i]; }
+  saveMarks(); store.set("ytmerge.added", added);
+}
+
+// The user's order of videos and named dividers ("div:<n>"); videos not in it yet go at the end.
+let layout = store.get("ytmerge.layout", []);
+let dividers = store.get("ytmerge.dividers", {});  // "div:<n>" -> name
+let added = store.get("ytmerge.added", {});        // id -> day it was added, "YYYY-MM-DD"
+const saveLayout = () => { store.set("ytmerge.layout", layout); store.set("ytmerge.dividers", dividers); };
+const today = (t = new Date()) => t.toLocaleDateString("en-CA");
+const isDiv = (k) => k.startsWith("div:");
+
+function sequence() {
+  const have = new Set(ids);
+  const seq = layout.filter((k) => (isDiv(k) ? k in dividers : have.has(k)));
+  const seen = new Set(seq);
+  return [...seq, ...ids.filter((i) => !seen.has(i))];
+}
+
+function dayLabel(d) {
+  if (!d) return "Earlier";
+  if (d === today()) return "Today";
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (d === today(y)) return "Yesterday";
+  return new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+// What the list shows, top to bottom: videos and named dividers, plus day lines.
+// With markers on, each group sorts pinned first, done last.
+// Day lines ("Just now", "Today", "Yesterday", "Earlier"…) are labels, not real dividers: one only
+// shows while its videos still sit together in date order. Drag things out of order and it disappears.
+function rows() {
+  const groups = [{ key: null, vids: [] }];
+  for (const k of sequence()) {
+    if (isDiv(k)) groups.push({ key: k, vids: [] }); else groups.at(-1).vids.push(k);
+  }
+  const rank = { pin: 0, done: 2 };
+  const out = [];
+  for (const g of groups) {
+    let vids = g.vids;
+    if (markersOn()) vids = vids
+      .filter((i) => filter === "all" || (marks[i] || "none") === filter)
+      .map((id, n) => ({ id, n, r: rank[marks[id]] ?? 1 }))
+      .sort((a, b) => a.r - b.r || a.n - b.n)
+      .map((x) => x.id);
+    if (g.key) {
+      if (markersOn() && filter !== "all" && !vids.length) continue;
+      out.push({ type: "divider", key: g.key, count: vids.length });
+    }
+    for (const id of vids) out.push({ type: "video", id });
+  }
+  return withDayLines(out);
+}
+
+// "Just now" marks the latest batch you added, for a while; the next batch takes it over.
+const JUST_NOW_MS = 30 * 60 * 1000;
+let justNow = store.get("ytmerge.justnow", null);  // { ids, at }
+const nowSet = () => new Set(justNow && Date.now() - justNow.at < JUST_NOW_MS ? justNow.ids : []);
+
+function withDayLines(list) {
+  // Sort key per video: "" (unknown, oldest) < "YYYY-MM-DD" < "~now".
+  const fresh = nowSet();
+  const keyOf = (id) => (fresh.has(id) ? "~now" : added[id] || "");
+  const vids = list.flatMap((r, i) => (r.type === "video" ? [{ i, k: keyOf(r.id) }] : []));
+  if (new Set(vids.map((v) => v.k)).size < 2) return list;   // everything from one day: no lines
+  const startAt = new Map();                                   // list index -> label
+  for (const k of new Set(vids.map((v) => v.k))) {
+    const own = vids.filter((v) => v.k === k);
+    const first = own[0].i, lastI = own.at(-1).i;
+    // Its videos must be back to back, with nothing else (not even a divider) in between…
+    const together = list.slice(first, lastI + 1).every((r, n) => r.type === "video" && keyOf(r.id) === k);
+    // …and in date order: older above, newer below.
+    const inOrder = vids.every((v) => (v.i < first ? v.k <= k : v.i > lastI ? v.k >= k : true));
+    if (together && inOrder) startAt.set(first, k === "~now" ? "Just now" : dayLabel(k));
+  }
+  return list.flatMap((r, i) => (startAt.has(i) ? [{ type: "day", label: startAt.get(i) }, r] : [r]));
+}
+const shownIds = () => rows().filter((r) => r.type === "video").map((r) => r.id);
+$("autocopy").onchange = (e) => store.set("ytmerge.autocopy", e.target.checked);
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+async function submit(text, refresh = false) {
+  if (!text.trim()) return;
+  let res;
+  try { res = await api("/api/videos", { text, refresh }); }
+  catch { return toast("Can't reach the ytmerge server — is it still running?"); }
+  if (!res.ids.length) return toast("No YouTube links found in that text.");
+  const fresh = res.ids.filter((i) => !ids.includes(i));
+  ids = refresh ? ids : [...ids, ...fresh];
+  if (fresh.length) {
+    filter = "all";
+    for (const i of fresh) added[i] ??= today();
+    store.set("ytmerge.added", added);
+    justNow = { ids: fresh, at: Date.now() };
+    store.set("ytmerge.justnow", justNow);
+  }
+  store.set("ytmerge.ids", ids);
+  $("input").value = "";
+  autoCopyArmed = true;
+  toast(fresh.length ? `Fetching ${fresh.length} video${fresh.length > 1 ? "s" : ""}…`
+                     : "Already in the list — refreshing view.");
+  poll();
+}
+
+async function pasteGo() {
+  try { await submit(await navigator.clipboard.readText()); }
+  catch { $("input").focus(); toast("Clipboard blocked — press ⌘V in the box instead."); }
+}
+
+async function tabsGo() {
+  let res;
+  try { res = await api("/api/tabs", {}); }
+  catch (e) {
+    return toast(e.message === "404" ? "No browser session found (Opera GX, Chrome, Brave, Edge…)."
+                                     : "Can't reach the ytmerge server — is it still running?");
+  }
+  if (!res.ids.length) return toast(`No YouTube tabs open in ${res.browser}.`);
+  submit(res.ids.map((i) => `v=${i}`).join(" "));
+}
+
+const transcriptOf = (v) => (v && v.status === "done" ? v.document : "");
+const allDocs = (list = shownIds()) => list.map((i) => transcriptOf(videos[i])).filter(Boolean);
+
+async function copy(text, what) {
+  try { await navigator.clipboard.writeText(text); toast(`Copied ${what}`); return true; }
+  catch { toast("Copy blocked by the browser — click the button again."); return false; }
+}
+
+function saveText(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const safeName = (s) => (s || "untitled").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[ .]+$/, "") || "untitled";
+
+async function download(id, kind) {
+  const key = `${id}:${kind}`;
+  wanted.add(key);
+  try { downloads[key] = await api("/api/download", { id, kind }); }
+  catch { wanted.delete(key); return toast("Download request failed."); }
+  render(); deliver(); poll();
+}
+
+function deliver() {
+  for (const key of [...wanted]) {
+    const d = downloads[key];
+    if (!d) continue;
+    if (d.status === "done") {
+      wanted.delete(key);
+      const [id, kind] = key.split(":");
+      const a = document.createElement("a");
+      a.href = `/api/file?id=${id}&kind=${kind}`; a.download = d.filename || "";
+      document.body.appendChild(a); a.click(); a.remove();
+    } else if (d.status === "error") {
+      wanted.delete(key);
+    }
+  }
+}
+
+async function poll() {
+  clearTimeout(pollTimer);
+  if (!ids.length) return render();
+  try {
+    const s = await api(`/api/status?ids=${ids.join(",")}`);
+    ffmpeg = s.ffmpeg;
+    for (const v of s.videos) videos[v.id] = v;
+    downloads = s.downloads;
+  } catch { /* server restarting — keep last view, retry */ }
+
+  // A page reload or server restart loses in-memory state: requeue unknowns.
+  const unknown = ids.filter((i) => !videos[i] || videos[i].status === "unknown");
+  if (unknown.length) api("/api/videos", { text: unknown.map((i) => `v=${i}`).join(" ") }).catch(() => {});
+
+  deliver();
+  render();
+  const busy = ids.some((i) => ["queued", "fetching", "unknown"].includes(videos[i]?.status ?? "unknown"))
+    || Object.values(downloads).some((d) => ["queued", "downloading"].includes(d.status));
+  if (!busy && autoCopyArmed) {
+    autoCopyArmed = false;
+    const docs = allDocs();
+    if ($("autocopy").checked && docs.length) copy(docs.join("\n"), `${docs.length} transcript${docs.length > 1 ? "s" : ""}`);
+  }
+  if (busy) pollTimer = setTimeout(poll, 700);
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function dlButton(id, kind, label) {
+  const d = downloads[`${id}:${kind}`];
+  if (d && ["queued", "downloading"].includes(d.status)) {
+    const pct = Math.round(d.progress || 0);
+    const stage = d.stage === "merging" ? "merging…" : d.status === "queued" ? "queued…" : d.stage === "starting" ? "preparing…" : `${d.stage === "audio" && kind === "video" ? "audio " : ""}${pct}%`;
+    return `<button class="prog" disabled><i style="width:${pct}%"></i>${label} · ${stage}</button>`;
+  }
+  const again = d && d.status === "done" ? " ✓" : "";
+  return `<button data-act="dl" data-kind="${kind}" data-id="${id}"${d?.status === "error" ? ` title="${esc(d.error)}"` : ""}>${label}${again}${d?.status === "error" ? " ⚠ retry" : ""}</button>`;
+}
+
+let lastSig = "", dragKey = null;
+function render() {
+  // Don't rebuild the list mid-drag or while a divider name is being typed.
+  if (dragKey || document.activeElement?.classList.contains("dname")) { lastSig = ""; return; }
+  // Skip identical re-renders so polling doesn't reset preview scroll/selection.
+  const sig = JSON.stringify([ids, ids.map((i) => videos[i]?.status), downloads, ffmpeg, markersOn(), marks, filter,
+                              layout, dividers, added, [...nowSet()]]);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  $("empty").hidden = ids.length > 0;
+  $("bar").hidden = ids.length === 0;
+  $("pill").textContent = ffmpeg ? "local · full-quality video" : "no ffmpeg — video needs: brew install ffmpeg";
+  const done = ids.filter((i) => videos[i]?.status === "done").length;
+  const errs = ids.filter((i) => videos[i]?.status === "error").length;
+  $("summary").textContent = `${done}/${ids.length} ready` + (errs ? ` · ${errs} failed` : "");
+  const shown = shownIds();
+  const shownDone = shown.filter((i) => videos[i]?.status === "done").length;
+  $("copyAll").disabled = $("saveAll").disabled = shownDone === 0;
+  $("dlAllVideo").disabled = $("dlAllAudio").disabled = shown.length === 0;
+
+  $("filters").hidden = !markersOn();
+  if (markersOn()) {
+    const count = (k) => ids.filter((i) => (marks[i] || "none") === k).length;
+    const chips = [["all", `All ${ids.length}`],
+      ...Object.entries(MARKS).map(([k, m]) => [k, `${m.label} ${count(k)}`]),
+      ["none", `Unmarked ${count("none")}`]];
+    $("filters").innerHTML = chips.map(([k, label]) =>
+      `<button data-filter="${k}" class="${filter === k ? "on" : ""}">${label}</button>`).join("");
+  }
+
+  const open = new Set([...document.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+  $("list").innerHTML = shown.length || !ids.length ? "" : `<li class="empty">Nothing marked like that yet.</li>`;
+  $("list").innerHTML += rows().map((r) => {
+    if (r.type === "day") return `<li class="day">${esc(r.label)}</li>`;
+    if (r.type === "divider") return `<li class="divider" data-key="${r.key}">
+      <span class="grip" title="Drag to move">⠿</span>
+      <input class="dname" data-key="${r.key}" value="${esc(dividers[r.key])}" placeholder="Name this group" spellcheck="false">
+      <span class="line"></span><span class="dcount">${r.count}</span>
+      <button data-act="undiv" data-key="${r.key}" title="Remove divider (keeps the videos)">✕</button>
+    </li>`;
+    const id = r.id;
+    const v = videos[id] || { status: "queued" };
+    const url = `https://www.youtube.com/watch?v=${id}`;
+    let status = "";
+    if (v.status === "done") status = `<div class="status done">${v.has_transcript ? "Transcript ready" : "No captions on this video (metadata only)"}</div>`;
+    else if (v.status === "error") status = `<div class="status error">⚠ ${esc(v.error)}</div>`;
+    else status = `<div class="status busy">${v.status === "fetching" ? "Fetching transcript…" : "Queued…"}</div>`;
+    const info = [v.channel, v.duration, v.date].filter(Boolean).map(esc).join(" · ");
+    const doc = transcriptOf(v);
+    const mk = markersOn() ? marks[id] : null;
+    const badge = mk ? `<span class="badge">${MARKS[mk].badge}</span>` : "";
+    const markBtns = markersOn() ? `<span class="marks">${Object.entries(MARKS).map(([k, m]) =>
+      `<button data-act="mark" data-mark="${k}" data-id="${id}" class="${mk === k ? "on" : ""}" title="${m.title}${mk === k ? " (click to clear)" : ""}">${m.label}</button>`).join("")}</span>` : "";
+    return `<li class="card${mk ? ` m-${mk}` : ""}" data-key="${id}">
+      <span class="grip" title="Drag to move">⠿</span>
+      <a href="${url}" target="_blank" rel="noopener" class="thumb" style="background-image:url(https://i.ytimg.com/vi/${id}/mqdefault.jpg)"></a>
+      <div class="meta">
+        <a class="title" href="${url}" target="_blank" rel="noopener">${esc(v.title || id)}</a>
+        ${info || badge ? `<div class="info">${badge}${info}</div>` : ""}
+        ${status}
+        <div class="actions">
+          <button data-act="copy" data-id="${id}" ${doc ? "" : "disabled"}>Copy transcript</button>
+          ${dlButton(id, "video", "Video")}
+          ${dlButton(id, "audio", "Audio")}
+          <button data-act="txt" data-id="${id}" ${doc ? "" : "disabled"}>.txt</button>
+          ${v.status === "error" || v.status === "done" ? `<button data-act="retry" data-id="${id}" title="Fetch again, ignoring the cache">↻</button>` : ""}
+          <button data-act="remove" data-id="${id}" title="Remove from list">✕</button>
+          ${markBtns}
+        </div>
+        ${doc ? `<details data-id="${id}"${open.has(id) ? " open" : ""}><summary>Preview</summary><pre>${esc(doc)}</pre></details>` : ""}
+      </div>
+    </li>`;
+  }).join("");
+}
+
+$("list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const { act, id, kind } = b.dataset, v = videos[id];
+  if (act === "copy") copy(transcriptOf(v), "transcript");
+  else if (act === "txt") saveText(`${safeName(v.title)}.txt`, transcriptOf(v));
+  else if (act === "dl") download(id, kind);
+  else if (act === "retry") submit(`v=${id}`, true);
+  else if (act === "remove") { ids = ids.filter((i) => i !== id); store.set("ytmerge.ids", ids); forget([id]); render(); }
+  else if (act === "undiv") { delete dividers[b.dataset.key]; saveLayout(); render(); }
+  else if (act === "mark") {
+    if (marks[id] === b.dataset.mark) delete marks[id]; else marks[id] = b.dataset.mark;
+    saveMarks(); render();
+  }
+});
+
+// Divider names save as you type; Enter/Esc finishes.
+$("list").addEventListener("input", (e) => {
+  if (e.target.classList.contains("dname")) { dividers[e.target.dataset.key] = e.target.value; saveLayout(); }
+});
+$("list").addEventListener("keydown", (e) => {
+  if (e.target.classList.contains("dname") && (e.key === "Enter" || e.key === "Escape")) e.target.blur();
+});
+$("list").addEventListener("focusout", (e) => { if (e.target.classList?.contains("dname")) setTimeout(render, 0); });
+
+// Drag by the ⠿ handle (only the handle, so text in previews stays selectable).
+$("list").addEventListener("pointerdown", (e) => {
+  const li = e.target.closest(".grip")?.closest("li[data-key]");
+  if (li) li.draggable = true;
+});
+$("list").addEventListener("dragstart", (e) => {
+  const li = e.target.closest?.("li[data-key]");
+  if (!li?.draggable) return e.preventDefault();
+  dragKey = li.dataset.key;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", dragKey);
+  requestAnimationFrame(() => li.classList.add("dragging"));
+});
+const clearDrop = () => document.querySelectorAll(".drop-before, .drop-after")
+  .forEach((x) => x.classList.remove("drop-before", "drop-after"));
+function dropSpot(e) {
+  const li = e.target.closest?.("li[data-key]");
+  if (!li || li.dataset.key === dragKey) return null;
+  const box = li.getBoundingClientRect();
+  return { li, after: e.clientY > box.top + box.height / 2 };
+}
+$("list").addEventListener("dragover", (e) => {
+  if (!dragKey) return;
+  e.preventDefault();
+  const spot = dropSpot(e);
+  clearDrop();
+  if (spot) spot.li.classList.add(spot.after ? "drop-after" : "drop-before");
+});
+$("list").addEventListener("drop", (e) => {
+  if (!dragKey) return;
+  e.preventDefault();
+  const spot = dropSpot(e);
+  if (spot) {
+    const seq = sequence().filter((k) => k !== dragKey);
+    seq.splice(seq.indexOf(spot.li.dataset.key) + (spot.after ? 1 : 0), 0, dragKey);
+    layout = seq; saveLayout();
+  }
+});
+$("list").addEventListener("dragend", (e) => {
+  clearDrop();
+  dragKey = null;
+  document.querySelectorAll("li[draggable=true]").forEach((x) => { x.draggable = false; x.classList.remove("dragging"); });
+  render();
+});
+
+$("filters").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-filter]");
+  if (b) { filter = filter === b.dataset.filter ? "all" : b.dataset.filter; render(); }
+});
+
+$("go").onclick = () => submit($("input").value);
+$("pasteGo").onclick = pasteGo;
+$("tabsGo").onclick = tabsGo;
+$("copyAll").onclick = () => { const d = allDocs(); copy(d.join("\n"), `${d.length} transcript${d.length > 1 ? "s" : ""}`); };
+$("saveAll").onclick = () => saveText(`ytmerge-${new Date().toISOString().slice(0, 10)}.txt`, allDocs().join("\n"));
+$("dlAllVideo").onclick = () => shownIds().forEach((i) => download(i, "video"));
+$("dlAllAudio").onclick = () => shownIds().forEach((i) => download(i, "audio"));
+$("clear").onclick = () => {
+  forget(ids); ids = []; layout = []; dividers = {};
+  store.set("ytmerge.ids", ids); saveLayout(); render();
+};
+$("addDiv").onclick = () => {
+  const key = `div:${Date.now()}`;
+  dividers[key] = ""; layout = [key, ...sequence()]; saveLayout();
+  filter = "all"; render();
+  document.querySelector(`.dname[data-key="${key}"]`)?.focus();
+};
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit($("input").value); }
+});
+$("input").addEventListener("paste", () => setTimeout(() => submit($("input").value), 0));
+
+// ?q=<text with links> — lets a Shortcut / bookmarklet open the page pre-loaded.
+// ?tabs — grab every open YouTube tab straight away (bookmark /?tabs for one click).
+const params = new URLSearchParams(location.search), q = params.get("q");
+if (q || params.has("tabs")) history.replaceState(null, "", "/");
+if (q) submit(q); else if (params.has("tabs")) { poll(); tabsGo(); } else poll();
+$("input").focus();
+</script>
+</body>
+</html>

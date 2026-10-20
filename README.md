@@ -1,101 +1,241 @@
+<div align="center">
+
+<img src="assets/logo.svg" width="80" alt="ytmerge logo">
+
 # ytmerge
 
-Links in a text file → mp4s and AI-ready transcript documents out. One command.
+**Paste YouTube links. Get the transcripts, the videos, or both.**
 
-A small cross-platform CLI (macOS, Linux, Windows) that batch-fetches YouTube
-videos **and** their transcripts. For every URL it produces:
+[![CI](https://github.com/mal0ware/ytmerge/actions/workflows/ci.yml/badge.svg)](https://github.com/mal0ware/ytmerge/actions/workflows/ci.yml)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-555)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-- `downloaded/<title>.mp4` — the video (yt-dlp, best mp4+m4a)
-- `downloaded/<title>.txt` — full metadata header (title, channel, date,
-  duration, views, tags, chapters, description) + the complete transcript
-  with `[mm:ss]` timestamps
+<img src="assets/screenshot.png" width="820" alt="The ytmerge web UI with three fetched videos">
 
-All transcripts are also merged onto the clipboard, ready to paste into
-Claude or any other LLM. All YouTube interaction goes through
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) (auto-downloaded on first run,
-self-updating daily), so ytmerge inherits its resilience to YouTube changes.
-Videos download in parallel (4 workers by default).
+</div>
 
-## Quick start
+ytmerge takes any text with YouTube links in it (a list, a chat log, your open browser tabs) and gives you back:
 
-```bash
-# put any text containing YouTube links into links.txt, then:
-ytmerge links.txt
-# or just `ytmerge` — clipboard URLs, falling back to ./links.txt
-```
+- the full transcript of each video, with timestamps and a metadata header, ready to paste into Claude or another LLM
+- the video as an mp4, or just the audio
+- one merged copy of every transcript, already on your clipboard
 
-## Install
+It runs on your own machine. Everything goes through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which ytmerge downloads and keeps up to date for you.
 
-### macOS and Linux
+There are two ways to use it: a **web page** on your computer (easiest, nothing to build) and a **command-line tool**.
+
+## Web UI
 
 ```bash
 git clone https://github.com/mal0ware/ytmerge.git
 cd ytmerge
-./install.sh
+./ytmerge-web          # opens http://localhost:8765
 ```
 
-`install.sh` detects your OS and installs the right deps:
+You need `python3`. For video downloads you also need ffmpeg (`brew install ffmpeg deno` on a Mac). Transcripts and audio work without it.
 
-- **macOS:** Homebrew + Xcode Command Line Tools; pulls `nlohmann-json` via brew; libcurl from the SDK.
-- **Linux (apt/dnf/pacman):** installs `build-essential`/`gcc-c++`, `libcurl-dev`, `nlohmann-json3-dev`, plus `xclip` + `wl-clipboard` + `libnotify` for clipboard and toast notifications.
+On the page you can:
 
-Then it builds with `make` and copies `ytmerge` to `~/.local/bin/`. Ensure that's on your `PATH`:
+- paste links into the box, and fetching starts right away
+- click **Grab my YouTube tabs** to pull in every YouTube video open in Opera GX, Chrome, Brave, Edge or Vivaldi
+- copy, download or save each transcript, video or audio on its own, or all of them at once
+- keep your list between visits, sorted by the day you added things, with your own named dividers and drag-to-reorder
+- turn on **Markers** to pin videos for later, flag ones you haven't watched, and mark ones you're done with
+
+To keep it running in the background on a Mac, run `./ytmerge-web install` (it starts at login; `./ytmerge-web uninstall` removes it). The server only listens on `127.0.0.1`, so nothing else on your network can use it.
+
+## Command line
+
+### Install
+
+**macOS / Linux**
 
 ```bash
-# in ~/.zshrc or ~/.bashrc
-export PATH="$HOME/.local/bin:$PATH"
+git clone https://github.com/mal0ware/ytmerge.git
+cd ytmerge
+./install.sh           # installs build deps, builds, copies ytmerge to ~/.local/bin
 ```
 
-### Windows (MSYS2 + mingw-w64)
-
-With [MSYS2](https://www.msys2.org/) already installed (`winget install MSYS2.MSYS2`),
-`install.ps1` does everything below automatically — pacman deps, `make`, and an
-install to `%LOCALAPPDATA%\ytmerge\bin` (added to your user PATH), with the required
-MSYS2 runtime DLLs copied next to the exe so it runs from any shell:
+**Windows** (needs [MSYS2](https://www.msys2.org/): `winget install MSYS2.MSYS2`)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The manual path takes about five minutes:
+### Use
 
-1. Install [MSYS2](https://www.msys2.org/) and open the **MSYS2 UCRT64** shell.
-2. Pull the toolchain and libraries:
+```bash
+ytmerge                          # links from your clipboard
+ytmerge links.txt                # links from a file
+ytmerge "URL1" "URL2"            # links as arguments (quote them in zsh)
+cat urls.txt | ytmerge -         # links from stdin
+```
+
+Each video ends up in `downloaded/` as `<title>.mp4` and `<title>.txt`, and all the transcripts land on your clipboard.
+
+| Option | What it does |
+| --- | --- |
+| `--no-video` | transcripts only, no downloads |
+| `--audio` / `--mp3` | audio only (mp3 converts it) |
+| `--out DIR` | output folder (default `downloaded`) |
+| `--workers N` | parallel downloads (default 4) |
+| `--proxy URL` / `--proxy-list FILE` | send requests through a proxy, or rotate through a list |
+| `--no-cache` | ignore cached transcripts |
+| `--update` | update yt-dlp now |
+
+Tip: bind `~/.local/bin/ytmerge` to a keyboard shortcut (Shortcuts.app on macOS, your desktop's custom shortcuts on Linux). Copy some links, press the keys, and the transcripts are on your clipboard.
+
+## What a transcript looks like
+
+```
+================================================================================
+TITLE:    The video's title
+CHANNEL:  Channel Name
+DATE:     2026-08-05
+DURATION: 12:34
+URL:      https://www.youtube.com/watch?v=...
+CHAPTERS: [0:00] Intro | [2:15] Setup | [6:45] Main demo
+
+DESCRIPTION:
+The video description...
+================================================================================
+
+[0:00] Intro text here.
+[0:45] More content.
+```
+
+## If YouTube blocks you
+
+Fetch a lot in a short time and YouTube may rate-limit your IP (HTTP 429). ytmerge tells you when that happens. You can wait it out, switch networks (a phone hotspot works), or use proxies:
+
+```bash
+./refresh-proxies.sh                                   # fetch a free public proxy list
+ytmerge --proxy-list ~/.cache/ytmerge/proxies.txt links.txt
+```
+
+Free proxies are hit and miss. A paid rotating proxy is more reliable.
+
+Transcripts are cached in `~/.cache/ytmerge` for 7 days, so fetching the same video again costs nothing.
+
+## Documentation
+
+Click a topic to expand it.
+
+<details>
+<summary><b>Web UI in depth</b></summary>
+
+<br>
+
+The web UI is a small Python server (standard library only) plus one HTML page. It uses the same transcript format and the same `~/.cache/ytmerge` cache as the CLI, so the two share cached transcripts and the yt-dlp binary.
+
+**Starting it**
+
+| Command | What it does |
+| --- | --- |
+| `./ytmerge-web` | start the server and open the page; running it again while it's up just opens the tab |
+| `./ytmerge-web install` | macOS: register a LaunchAgent so it starts at login and restarts if it dies |
+| `./ytmerge-web uninstall` | macOS: remove the LaunchAgent |
+| `YTMERGE_PORT=9000 ./ytmerge-web` | use a different port (default 8765) |
+
+With the LaunchAgent installed, bookmark `http://localhost:8765` or add it to the Dock from Safari (*File → Add to Dock*). The log is at `~/Library/Logs/ytmerge-web.log`.
+
+For an on-demand shortcut instead, add `alias ytm="$HOME/path/to/ytmerge/ytmerge-web"` to `~/.zshrc`. `Ctrl+C` stops it.
+
+**Links that open the page pre-loaded**
+
+- `http://localhost:8765/?q=<text with links>` fetches those links straight away. Handy for a bookmarklet or a Shortcut.
+- `http://localhost:8765/?tabs` grabs every open YouTube tab. Bookmark it for a one-click grab.
+
+**Grabbing browser tabs**
+
+Chromium browsers keep the current session in `<profile>/Sessions/Session_*`. ytmerge reads that file directly to get the tabs that are open right now (no history, no closed tabs). Your browser isn't touched and nothing needs installing. Supported: Opera GX, Opera, Chrome, Brave, Edge and Vivaldi on macOS and Windows, and the same minus Opera GX on Linux.
+
+**Downloads and storage**
+
+- Videos and audio are prepared in `~/.cache/ytmerge/media`, handed to your browser's Downloads folder, and deleted from the cache after 24 hours.
+- Your list, markers, dividers and order are stored in the browser (localStorage), so they stay between visits but don't follow you to another browser.
+
+**Organizing the list**
+
+- Day lines (*Just now*, *Today*, *Yesterday*, a date, *Earlier*) show where each batch was added. They're labels, not real dividers: a line only shows while its videos sit together in date order, so dragging things out of order hides it. *Just now* marks only the latest batch and fades after 30 minutes.
+- **+ Divider** adds a named divider. Drag videos and dividers by the ⠿ handle that appears on hover.
+- **Markers** (off by default): 📌 Pin floats a video to the top of its group, ● New flags it as unwatched, ✓ Done dims it and sinks it to the bottom. Filter chips show one kind at a time, and the bulk buttons act on what's shown.
+
+**Security**
+
+The server only listens on `127.0.0.1` and rejects requests with a foreign `Host` or `Origin` header, so other machines and other websites can't drive it.
+
+</details>
+
+<details>
+<summary><b>macOS setup for the web UI</b></summary>
+
+<br>
+
+1. **python3**: already there if you have the Xcode Command Line Tools (`xcode-select --install`) or a python.org install.
+2. **ffmpeg**: needed for video downloads, because YouTube serves video and audio as separate streams that ffmpeg joins. Transcripts and audio work without it.
+   ```bash
+   brew install ffmpeg deno   # deno is the JS runtime yt-dlp uses to see every format
+   ```
+   If brew complains about the Xcode license, run `sudo xcodebuild -license accept` first.
+3. **yt-dlp** downloads itself into `~/.cache/ytmerge/bin` on first run and checks for updates once a day. If `yt-dlp` is already on your PATH (for example from `brew install yt-dlp`), that one is used instead.
+
+</details>
+
+<details>
+<summary><b>Building the CLI</b></summary>
+
+<br>
+
+**macOS and Linux:** `./install.sh` detects your OS, installs what's needed, builds with `make`, and copies `ytmerge` to `~/.local/bin/`.
+
+- macOS: Homebrew and the Xcode Command Line Tools; `nlohmann-json` from brew; libcurl from the SDK.
+- Linux (apt, dnf or pacman): `build-essential`/`gcc-c++`, `libcurl-dev`, `nlohmann-json3-dev`, plus `xclip`, `wl-clipboard` and `libnotify` for clipboard and notifications.
+
+Make sure `~/.local/bin` is on your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # in ~/.zshrc or ~/.bashrc
+```
+
+**Windows:** with MSYS2 installed, `install.ps1` installs the pacman packages, runs `make`, installs to `%LOCALAPPDATA%\ytmerge\bin` (added to your user PATH), and copies the MSYS2 runtime DLLs next to the exe so it runs from any shell.
+
+To build by hand instead:
+
+1. Open the **MSYS2 UCRT64** shell.
+2. Install the toolchain and libraries:
    ```bash
    pacman -S --needed mingw-w64-ucrt-x86_64-toolchain \
                        mingw-w64-ucrt-x86_64-curl \
                        mingw-w64-ucrt-x86_64-nlohmann-json \
                        make pkgconf
    ```
-3. From the same shell, in the cloned repo:
-   ```bash
-   make
-   ```
-   Output: `ytmerge.exe`. Copy it anywhere on `%PATH%` (e.g. `~/AppData/Local/Microsoft/WindowsApps/`) or call it from its build location. Note: the exe depends on MSYS2 UCRT64 runtime DLLs (`libcurl-4.dll`, `libstdc++-6.dll`, ...), so outside an MSYS2 shell you must copy those DLLs next to it (`ldd ytmerge.exe` lists them) — `install.ps1` does this for you.
+3. Run `make` in the repo. You get `ytmerge.exe`.
 
-Windows uses the Win32 clipboard API directly (no PowerShell shell-out) and skips desktop notifications — completion status prints to stderr instead.
+The exe needs the MSYS2 UCRT64 runtime DLLs (`libcurl-4.dll`, `libstdc++-6.dll` and others). Outside an MSYS2 shell, copy them next to it; `ldd ytmerge.exe` lists them.
 
-## Quick test
+</details>
 
-Copy any YouTube URL to your clipboard, then run:
+<details>
+<summary><b>CLI behavior</b></summary>
 
-```bash
-ytmerge
-```
+<br>
 
-You'll see per-video progress in the terminal, get a macOS notification when it's done, and your clipboard will be replaced with the merged transcripts.
+**Input.** With no arguments, ytmerge reads links from the clipboard and falls back to `./links.txt`. You can also pass a file, URLs as arguments, or `-` for stdin. In zsh, always quote URLs: the `?` in `?v=` is a glob character and an unquoted URL gives `zsh: no matches found`.
 
-## Three ways to feed it URLs
+**Links it understands.** `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/` and `youtube.com/embed/`, anywhere in the text. Duplicates are dropped.
 
-```bash
-ytmerge                              # 1. clipboard (default — best for the Shortcuts.app flow)
-ytmerge "URL1" "URL2" "URL3"         # 2. CLI args
-cat urls.txt | ytmerge -             # 3. stdin (the `-` is required)
-```
+**Output.** For each video, `downloaded/<title>.mp4` (best mp4 + m4a) and `downloaded/<title>.txt`. Output order follows input order, whichever download finishes first. Videos download in parallel, 4 at a time by default. All transcripts are merged, separated by blank lines, and put on the clipboard.
 
-**Important for zsh users:** always quote URLs on the command line. The `?` in `?v=...` is a glob character, and an unquoted URL will produce `zsh: no matches found`.
+**Platforms.** Clipboard and notifications are the only OS-specific parts; everything else is plain C++20.
 
-## Options
+| | Clipboard | Notification when done |
+| --- | --- | --- |
+| macOS | `pbcopy` / `pbpaste` | notification center |
+| Linux | `wl-copy` on Wayland, else `xclip` or `xsel` | `notify-send` |
+| Windows | Win32 clipboard API | none; status prints to the terminal |
+
+**All options**
 
 ```
 --no-video           transcripts + metadata only (no download)
@@ -110,79 +250,12 @@ cat urls.txt | ytmerge -             # 3. stdin (the `-` is required)
 -h, --help           this message
 ```
 
-## Rate limits and proxies
+</details>
 
-YouTube rate-limits its captions endpoint per source IP. All caption fetches go through [yt-dlp](https://github.com/yt-dlp/yt-dlp) now, which inherits YouTube's resilience patterns — but the per-IP 429 ceiling on the timedtext endpoint still exists. From one home IP you can typically fetch dozens of transcripts without issue, but enough repeated runs in a short window will trigger HTTP 429. When that happens `ytmerge` reports it explicitly:
+<details>
+<summary><b>Transcript format</b></summary>
 
-```
-[1/1] InH25PzMqpk  FAIL: ip blocked (429)
-all 1 failed — 1 ip blocked (429)
-  hint: YouTube has rate-limited this IP. Either:
-    - switch network (phone hotspot, VPN, different wifi)
-    - wait a few hours
-    - re-run with --proxy URL or --proxy-list FILE
-```
-
-Three honest options to work around it:
-
-1. **Wait** — blocks clear in minutes to a few hours.
-2. **Change source IP** — phone hotspot for 30 seconds, a VPN you already have, or a different network.
-3. **Use a proxy list.** Write one HTTP/SOCKS proxy URL per line in a text file (lines starting with `#` are ignored), then pass `--proxy-list /path/to/proxies.txt`. Workers cycle through the list, and on a 429 a proxy is cooled down for 10 minutes before being tried again.
-
-### Quick start with free public proxies
-
-A bundled helper grabs ~100 fresh entries from a public list and writes them to `~/.cache/ytmerge/proxies.txt`:
-
-```bash
-./refresh-proxies.sh                 # writes ~100 proxies to ~/.cache/ytmerge/proxies.txt
-ytmerge --proxy-list ~/.cache/ytmerge/proxies.txt "URL1" "URL2"
-```
-
-Reality check: free public proxies are unreliable by nature. Most will be dead, slow, or blocked by Google. Only a fraction (often 5–30% of a fresh list) will actually reach YouTube. The rotation + cooldown logic is designed for exactly that — try one, on failure cool it down, try the next. Re-run `refresh-proxies.sh` periodically; lists go stale within hours. Also be aware that public proxies are untrusted infrastructure and can observe request URLs (though HTTPS protects the content, and `ytmerge` sends no credentials).
-
-### Other proxy sources
-
-- **Webshare** (~$1/mo, residential, reliable): they give you a single endpoint URL that internally rotates IPs. Drop that one URL into your proxy list and you're done.
-- **Your VPN provider's proxy endpoints** if it exposes SOCKS (Mullvad, ProtonVPN, etc.).
-
-Cookies-from-browser was considered and tested — it does *not* lift this particular rate limit. The 429 keys on IP regardless of authentication state.
-
-## Cache
-
-Successful transcripts are cached at `~/.cache/ytmerge/<video_id>.txt` and evicted after 7 days. Re-running on the same URLs is free. `--no-cache` skips it. Nuke with `rm -rf ~/.cache/ytmerge`.
-
-## Bind to a global keyboard shortcut
-
-### macOS (Shortcuts.app)
-
-1. Open **Shortcuts.app** (built into macOS).
-2. Click **+** to create a new shortcut. Name it `ytmerge`.
-3. From the action search on the right, drag in **Run Shell Script**.
-4. Set Shell to `/bin/zsh` and the script body to:
-   ```
-   ~/.local/bin/ytmerge
-   ```
-5. Click the info icon (ⓘ) at the top → **Add Keyboard Shortcut** → press your preferred combo (e.g. `⌃⌥⌘Y`).
-6. Optional: tick **Pin in Menu Bar** for a clickable fallback.
-
-No code signing or developer profile needed — Shortcuts.app runs the script as you.
-
-### Linux
-
-Use your desktop environment's keyboard settings:
-- **GNOME:** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → add a binding with command `~/.local/bin/ytmerge`.
-- **KDE Plasma:** System Settings → Shortcuts → Custom Shortcuts → New → Global Shortcut → Command/URL.
-- **Window managers (i3/sway/Hyprland/etc.):** add a `bindsym` / `bind` entry pointing at the binary.
-
-### Windows
-
-Two approaches:
-- **PowerToys "Keyboard Manager"** + a small `.cmd` wrapper that calls `ytmerge.exe`.
-- **AutoHotkey** v2 with a hotkey that runs `Run "ytmerge.exe"`.
-
-## Output format
-
-Each video produces `downloaded/<title>.txt` with a full metadata header followed by a timestamped transcript:
+<br>
 
 ```
 ================================================================================
@@ -204,15 +277,78 @@ Full video description text here...
 [2:15] Setup section begins...
 ```
 
-When using clipboard mode (default), all transcripts from the batch are merged and placed on the clipboard, each separated by a blank line. Clear delimiters help downstream LLMs attribute insights to the right source.
+The clear delimiters help an LLM keep track of which video a point came from when you paste several at once.
 
-## Notes
+</details>
 
-- URL parser is forgiving. Paste anything containing YouTube links and it'll extract them. Duplicates are deduped. Supports `youtube.com/watch`, `youtu.be`, `youtube.com/shorts`, `youtube.com/embed`.
-- Output ordering follows input ordering (deterministic, independent of which worker finishes first).
-- Both the C++ binary (for downloading yt-dlp) and yt-dlp itself (for fetches) pick up `HTTPS_PROXY` / `ALL_PROXY` env vars automatically — `--proxy` overrides them.
-- **Platform support:** macOS, Linux (X11 via `xclip` or Wayland via `wl-copy`), and Windows (Win32 clipboard API, no native toast). Clipboard and notification are the only OS-specific surfaces; everything else (HTTP, parsing, threading, cache) is plain C++20.
+<details>
+<summary><b>Rate limits and proxies</b></summary>
+
+<br>
+
+YouTube rate-limits its captions endpoint per IP. From a home connection you can usually fetch dozens of transcripts without trouble, but many runs in a short window will get you an HTTP 429. ytmerge says so plainly:
+
+```
+[1/1] InH25PzMqpk  FAIL: ip blocked (429)
+all 1 failed — 1 ip blocked (429)
+  hint: YouTube has rate-limited this IP. Either:
+    - switch network (phone hotspot, VPN, different wifi)
+    - wait a few hours
+    - re-run with --proxy URL or --proxy-list FILE
+```
+
+Your options:
+
+1. **Wait.** Blocks clear within minutes to a few hours.
+2. **Change your IP.** A phone hotspot for 30 seconds, a VPN, or another network.
+3. **Use proxies.** Put one HTTP or SOCKS proxy URL per line in a file (lines starting with `#` are ignored) and pass `--proxy-list FILE`. Workers rotate through the list, and a proxy that hits a 429 rests for 10 minutes.
+
+`./refresh-proxies.sh` writes about 100 fresh public proxies to `~/.cache/ytmerge/proxies.txt`. Expect most of them to be dead or blocked; often only 5–30% reach YouTube, which is what the rotation is built for. Lists go stale within hours, so re-run it now and then. Public proxies are untrusted: HTTPS protects the content, and ytmerge sends no credentials, but they can see which URLs you request.
+
+More reliable options: a rotating residential proxy such as Webshare (about $1/month, one URL that rotates IPs for you), or your VPN's SOCKS endpoint if it has one (Mullvad, ProtonVPN and others).
+
+Browser cookies don't help here; the limit is on the IP whether you're signed in or not.
+
+The `HTTPS_PROXY` and `ALL_PROXY` environment variables are picked up automatically. `--proxy` overrides them.
+
+</details>
+
+<details>
+<summary><b>Cache</b></summary>
+
+<br>
+
+Transcripts are cached at `~/.cache/ytmerge/<video_id>.txt` (or under `$XDG_CACHE_HOME`) for 7 days, so re-running on the same links is free. `--no-cache` skips the cache for one run, and `rm -rf ~/.cache/ytmerge` clears it.
+
+</details>
+
+<details>
+<summary><b>Keyboard shortcuts</b></summary>
+
+<br>
+
+**macOS (Shortcuts.app)**
+
+1. Open Shortcuts.app and click **+**. Name it `ytmerge`.
+2. Add a **Run Shell Script** action. Set the shell to `/bin/zsh` and the script to `~/.local/bin/ytmerge`.
+3. Click the ⓘ icon, choose **Add Keyboard Shortcut**, and press your combo (for example `⌃⌥⌘Y`).
+4. Optionally tick **Pin in Menu Bar**.
+
+No code signing needed; Shortcuts runs the script as you.
+
+**Linux**
+
+- GNOME: Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts, with the command `~/.local/bin/ytmerge`.
+- KDE Plasma: System Settings → Shortcuts → Custom Shortcuts → New → Global Shortcut → Command/URL.
+- i3, sway, Hyprland and others: add a `bindsym` or `bind` line for the binary.
+
+**Windows**
+
+- PowerToys Keyboard Manager with a small `.cmd` file that calls `ytmerge.exe`, or
+- AutoHotkey v2 with a hotkey that runs `Run "ytmerge.exe"`.
+
+</details>
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

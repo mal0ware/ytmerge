@@ -29,6 +29,9 @@ jobs:
       - name: Smoke test (--help)
         run: ./ytmerge --help
 
+      - name: Web UI unit tests
+        run: python3 -m unittest discover -s tests -p 'test_web.py'
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
