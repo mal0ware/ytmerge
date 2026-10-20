@@ -27,6 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+import browsers
+
 DEFAULT_PORT = 8765
 CACHE_TTL_DAYS = 7
 MEDIA_TTL_HOURS = 24
@@ -491,6 +493,15 @@ class Handler(BaseHTTPRequestHandler):
             ids = extract_video_ids(str(b.get("text", "")))
             self.app.queue_videos(ids, refresh=bool(b.get("refresh")))
             self._json({"ids": ids})
+        elif u.path == "/api/tabs":
+            browser = str(b.get("browser") or "auto")
+            if browser not in ("auto", *browsers.BROWSERS):
+                return self._json({"error": "unknown browser"}, 400)
+            try:
+                name, urls = browsers.open_tab_urls(browser)
+            except (LookupError, OSError) as e:
+                return self._json({"error": str(e)}, 404)
+            self._json({"browser": name, "ids": extract_video_ids(" ".join(urls))})
         elif u.path == "/api/download":
             vid, kind = str(b.get("id", "")), str(b.get("kind", ""))
             if not VALID_ID.match(vid) or kind not in ("video", "audio"):
