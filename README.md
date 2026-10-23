@@ -22,7 +22,7 @@ ytmerge takes any text with YouTube links in it (a list, a chat log, your open b
 
 It runs on your own machine. Everything goes through [yt-dlp](https://github.com/yt-dlp/yt-dlp), which ytmerge downloads and keeps up to date for you.
 
-There are two ways to use it: a **web page** on your computer (easiest, nothing to build) and a **command-line tool**.
+There are two ways to use it: a web page on your computer (easiest, nothing to build) and a command-line tool.
 
 ## Web UI
 
@@ -172,13 +172,13 @@ The server only listens on `127.0.0.1` and rejects requests with a foreign `Host
 
 <br>
 
-1. **python3**: already there if you have the Xcode Command Line Tools (`xcode-select --install`) or a python.org install.
-2. **ffmpeg**: needed for video downloads, because YouTube serves video and audio as separate streams that ffmpeg joins. Transcripts and audio work without it.
+1. python3 is already there if you have the Xcode Command Line Tools (`xcode-select --install`) or a python.org install.
+2. ffmpeg is needed for video downloads, because YouTube serves video and audio as separate streams that ffmpeg joins. Transcripts and audio work without it.
    ```bash
    brew install ffmpeg deno   # deno is the JS runtime yt-dlp uses to see every format
    ```
    If brew complains about the Xcode license, run `sudo xcodebuild -license accept` first.
-3. **yt-dlp** downloads itself into `~/.cache/ytmerge/bin` on first run and checks for updates once a day. If `yt-dlp` is already on your PATH (for example from `brew install yt-dlp`), that one is used instead.
+3. yt-dlp downloads itself into `~/.cache/ytmerge/bin` on first run and checks for updates once a day. If `yt-dlp` is already on your PATH (for example from `brew install yt-dlp`), that one is used instead.
 
 </details>
 
@@ -303,7 +303,7 @@ Your options:
 2. **Change your IP.** A phone hotspot for 30 seconds, a VPN, or another network.
 3. **Use proxies.** Put one HTTP or SOCKS proxy URL per line in a file (lines starting with `#` are ignored) and pass `--proxy-list FILE`. Workers rotate through the list, and a proxy that hits a 429 rests for 10 minutes.
 
-`./refresh-proxies.sh` writes about 100 fresh public proxies to `~/.cache/ytmerge/proxies.txt`. Expect most of them to be dead or blocked; often only 5–30% reach YouTube, which is what the rotation is built for. Lists go stale within hours, so re-run it now and then. Public proxies are untrusted: HTTPS protects the content, and ytmerge sends no credentials, but they can see which URLs you request.
+`./refresh-proxies.sh` writes about 100 fresh public proxies to `~/.cache/ytmerge/proxies.txt`. Expect most of them to be dead or blocked; often only 5 to 30% reach YouTube, which is what the rotation is built for. Lists go stale within hours, so re-run it now and then. Public proxies are untrusted: HTTPS protects the content, and ytmerge sends no credentials, but they can see which URLs you request.
 
 More reliable options: a rotating residential proxy such as Webshare (about $1/month, one URL that rotates IPs for you), or your VPN's SOCKS endpoint if it has one (Mullvad, ProtonVPN and others).
 
