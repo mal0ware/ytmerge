@@ -100,7 +100,7 @@
   li.divider:hover button, li.divider button:focus-visible { opacity: 1; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0;
            background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 13.5px;
-           transition: .2s; pointer-events: none; max-width: calc(100% - 32px); }
+           transition: .2s; pointer-events: none; width: max-content; max-width: calc(100% - 32px); }
   .toast.show { opacity: 1; transform: translateX(-50%); }
   @media (max-width: 560px) {
     li.card { grid-template-columns: 1fr; }
@@ -255,9 +255,9 @@ function withDayLines(list) {
 const shownIds = () => rows().filter((r) => r.type === "video").map((r) => r.id);
 $("autocopy").onchange = (e) => store.set("ytmerge.autocopy", e.target.checked);
 
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2200);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), ms);
 }
 
 async function api(path, body) {
@@ -267,12 +267,13 @@ async function api(path, body) {
   return r.json();
 }
 
-async function submit(text, refresh = false) {
+// note: extra text for the toast (shown longer); empty: message when no links are found.
+async function submit(text, { refresh = false, note = "", empty = "No YouTube links found in that text." } = {}) {
   if (!text.trim()) return;
   let res;
   try { res = await api("/api/videos", { text, refresh }); }
   catch { return toast("Can't reach the ytmerge server — is it still running?"); }
-  if (!res.ids.length) return toast("No YouTube links found in that text.");
+  if (!res.ids.length) return toast(empty + note, note ? 8000 : undefined);
   const fresh = res.ids.filter((i) => !ids.includes(i));
   ids = refresh ? ids : [...ids, ...fresh];
   if (fresh.length) {
@@ -285,8 +286,8 @@ async function submit(text, refresh = false) {
   store.set("ytmerge.ids", ids);
   $("input").value = "";
   autoCopyArmed = true;
-  toast(fresh.length ? `Fetching ${fresh.length} video${fresh.length > 1 ? "s" : ""}…`
-                     : "Already in the list — refreshing view.");
+  toast((fresh.length ? `Fetching ${fresh.length} video${fresh.length > 1 ? "s" : ""}…`
+                      : "Already in the list — refreshing view.") + note, note ? 8000 : undefined);
   poll();
 }
 
@@ -295,15 +296,53 @@ async function pasteGo() {
   catch { $("input").focus(); toast("Clipboard blocked — press ⌘V in the box instead."); }
 }
 
+// Ask the ytmerge tabs extension (extension/ in the repo) for the live tab list.
+// It acknowledges at once, so when it isn't installed this costs a short wait.
+// Resolves to the extension's { urls } or { error }, or null if it isn't there.
+function extensionTabs() {
+  return new Promise((resolve) => {
+    const id = Math.random().toString(36).slice(2);
+    let timer = setTimeout(() => finish(null), 300);
+    function finish(value) { clearTimeout(timer); removeEventListener("message", onMessage); resolve(value); }
+    function onMessage(e) {
+      if (e.source !== window || e.origin !== location.origin || e.data?.id !== id) return;
+      if (e.data.type === "ytmerge:tabs-ack") {
+        clearTimeout(timer); timer = setTimeout(() => finish({ error: "timed out" }), 5000);
+      } else if (e.data.type === "ytmerge:tabs") finish(e.data);
+    }
+    addEventListener("message", onMessage);
+    postMessage({ type: "ytmerge:tabs-request", id }, location.origin);
+  });
+}
+
+// "3:05 PM" today, "Oct 23 10:12 PM" otherwise.
+function clock(epochSeconds) {
+  const d = new Date(epochSeconds * 1000);
+  const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? t
+    : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${t}`;
+}
+
+// The extension gives the live tabs. Without it the server reads the browser's
+// session file, which Windows keeps locked while the browser is open; the server
+// then reads an older snapshot and returns its time as asOf.
 async function tabsGo() {
-  let res;
-  try { res = await api("/api/tabs", {}); }
-  catch (e) {
-    return toast(e.message === "404" ? "No browser session found (Opera GX, Chrome, Brave, Edge…)."
-                                     : "Can't reach the ytmerge server — is it still running?");
+  const ext = await extensionTabs();
+  if (ext && Array.isArray(ext.urls)) {
+    const empty = "No YouTube videos open in your tabs.";
+    return ext.urls.length ? submit(ext.urls.join(" "), { empty }) : toast(empty);
   }
-  if (!res.ids.length) return toast(`No YouTube tabs open in ${res.browser}.`);
-  submit(res.ids.map((i) => `v=${i}`).join(" "));
+  let res;
+  try {
+    const r = await fetch("/api/tabs", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    res = await r.json();
+    if (!r.ok) return toast(`Can't read your tabs: ${res.error || "no browser session found"}.`, 8000);
+  } catch { return toast("Can't reach the ytmerge server — is it still running?"); }
+  const note = res.asOf ? ` These are your tabs as of ${clock(res.asOf)}: the browser locks the live list ` +
+                          "while it's open. Install the ytmerge tabs extension for live tabs." : "";
+  const empty = `No YouTube videos open in ${res.browser}.`;
+  if (!res.ids.length) return toast(empty + note, note ? 8000 : undefined);
+  submit(res.ids.map((i) => `v=${i}`).join(" "), { note, empty });
 }
 
 const transcriptOf = (v) => (v && v.status === "done" ? v.document : "");
@@ -467,7 +506,7 @@ $("list").addEventListener("click", (e) => {
   if (act === "copy") copy(transcriptOf(v), "transcript");
   else if (act === "txt") saveText(`${safeName(v.title)}.txt`, transcriptOf(v));
   else if (act === "dl") download(id, kind);
-  else if (act === "retry") submit(`v=${id}`, true);
+  else if (act === "retry") submit(`v=${id}`, { refresh: true });
   else if (act === "remove") { ids = ids.filter((i) => i !== id); store.set("ytmerge.ids", ids); forget([id]); render(); }
   else if (act === "undiv") { delete dividers[b.dataset.key]; saveLayout(); render(); }
   else if (act === "mark") {

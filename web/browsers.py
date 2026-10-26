@@ -6,6 +6,10 @@ header, then length-prefixed commands. Replaying the commands gives exactly
 the tabs that are open (or were open when the browser last quit), each at its
 current page: no back/forward history and no closed tabs. The browser stays
 untouched; nothing needs to be installed or relaunched.
+
+Windows is the exception: a running browser locks its live session file, so
+only an older snapshot can be read (see read_tabs). The page asks the ytmerge
+tabs extension (extension/ in the repo) first, which reads tabs live.
 """
 
 from __future__ import annotations
@@ -152,18 +156,43 @@ def parse_snss(data: bytes) -> list[str]:
     return urls
 
 
-def open_tab_urls(browser: str = "auto") -> tuple[str, list[str]]:
-    """(browser used, URLs of its open tabs). Raises LookupError when no
-    session file is found."""
+def _tab_urls(data: bytes) -> list[str]:
+    try:
+        return parse_snss(data)
+    except ValueError:
+        # Unknown format: every URL in the file, which can include history.
+        return [m.group().decode() for m in URL_RE.finditer(data)]
+
+
+def read_tabs(path: Path) -> tuple[list[str], float | None]:
+    """(open tab URLs, snapshot time) from the session file at `path`.
+
+    On Windows a running Chromium browser keeps its live session file locked
+    against all readers. The browser starts a new file every so often and
+    unlocks the previous one, so we fall back to the newest readable file in
+    the same folder and return its time (epoch seconds) so the caller can say
+    how old the list is. The time is None when the live file was read."""
+    older = sorted((p for p in path.parent.glob("Session_*") if p != path and p.is_file()),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for candidate in [path, *older]:
+        try:
+            data = candidate.read_bytes()
+        except PermissionError:
+            continue
+        return _tab_urls(data), (None if candidate == path else candidate.stat().st_mtime)
+    raise LookupError("the browser has its session file locked (Windows does this while it's "
+                      "open) and there's no older snapshot yet; the ytmerge tabs extension "
+                      "reads open tabs live")
+
+
+def open_tab_urls(browser: str = "auto") -> tuple[str, list[str], float | None]:
+    """(browser used, URLs of its open tabs, snapshot time or None if live).
+    Raises LookupError when no readable session file is found."""
     hit = latest_session(browser)
     if hit is None:
         which = "any supported browser" if browser == "auto" else browser
         raise LookupError(f"no open-tab session found for {which} "
                           f"(supported: {', '.join(BROWSERS)})")
     name, path = hit
-    data = path.read_bytes()
-    try:
-        return name, parse_snss(data)
-    except ValueError:
-        # Unknown format: every URL in the file, which can include history.
-        return name, [m.group().decode() for m in URL_RE.finditer(data)]
+    urls, as_of = read_tabs(path)
+    return name, urls, as_of

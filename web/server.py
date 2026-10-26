@@ -498,10 +498,12 @@ class Handler(BaseHTTPRequestHandler):
             if browser not in ("auto", *browsers.BROWSERS):
                 return self._json({"error": "unknown browser"}, 400)
             try:
-                name, urls = browsers.open_tab_urls(browser)
+                name, urls, as_of = browsers.open_tab_urls(browser)
             except (LookupError, OSError) as e:
                 return self._json({"error": str(e)}, 404)
-            self._json({"browser": name, "ids": extract_video_ids(" ".join(urls))})
+            # asOf (epoch seconds) is set when the live session was locked and
+            # an older snapshot was read instead; the page shows its time.
+            self._json({"browser": name, "ids": extract_video_ids(" ".join(urls)), "asOf": as_of})
         elif u.path == "/api/download":
             vid, kind = str(b.get("id", "")), str(b.get("kind", ""))
             if not VALID_ID.match(vid) or kind not in ("video", "audio"):

@@ -37,7 +37,7 @@ You need `python3`. For video downloads you also need ffmpeg (`brew install ffmp
 On the page you can:
 
 - paste links into the box, and fetching starts right away
-- click **Grab my YouTube tabs** to pull in every YouTube video open in Opera GX, Chrome, Brave, Edge or Vivaldi
+- click **Grab my YouTube tabs** to pull in every YouTube video open in Opera GX, Chrome, Brave, Edge or Vivaldi (on Windows, add the small tabs extension to get the tabs open right now; setup is under *Web UI in depth* below)
 - copy, download or save each transcript, video or audio on its own, or all of them at once
 - keep your list between visits, sorted by the day you added things, with your own named dividers and drag-to-reorder
 - turn on **Markers** to pin videos for later, flag ones you haven't watched, and mark ones you're done with
@@ -148,7 +148,19 @@ For an on-demand shortcut instead, add `alias ytm="$HOME/path/to/ytmerge/ytmerge
 
 **Grabbing browser tabs**
 
-Chromium browsers keep the current session in `<profile>/Sessions/Session_*`. ytmerge reads that file directly to get the tabs that are open right now (no history, no closed tabs). Your browser isn't touched and nothing needs installing. Supported: Opera GX, Opera, Chrome, Brave, Edge and Vivaldi on macOS and Windows, and the same minus Opera GX on Linux.
+There are two ways ytmerge finds your open YouTube tabs. The page tries the first and falls back to the second.
+
+1. **The ytmerge tabs extension** (in `extension/`). It asks the browser for the YouTube tabs open right now, so the list is always current. It works in any Chromium browser on any OS, and it's the way to go on Windows.
+2. **The browser's session file.** Chromium browsers record the open tabs in `<profile>/Sessions/Session_*`, and ytmerge reads that file (no history, no closed tabs). Nothing needs installing. On macOS and Linux this gives the tabs open right now. On Windows, a running browser locks that file so nothing else can read it. ytmerge then reads the previous copy, which the browser writes every so often (anywhere from a minute to about an hour old), and the page tells you what time the list is from. Supported: Opera GX, Opera, Chrome, Brave, Edge and Vivaldi on macOS and Windows, and the same minus Opera GX on Linux.
+
+**Installing the tabs extension**
+
+1. Open your browser's extensions page: `opera://extensions` in Opera and Opera GX, `chrome://extensions` in Chrome, `edge://extensions` in Edge, `brave://extensions` in Brave.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and pick the `extension` folder inside your ytmerge clone.
+4. Reload the ytmerge page if it's open.
+
+The extension can only see the addresses of YouTube tabs, and it only answers the ytmerge page at `http://localhost:8765`. It doesn't send anything anywhere else, and it skips private/incognito windows unless you allow it there. If you run the web UI on another port (`YTMERGE_PORT`), change `8765` in `extension/manifest.json` to match and reload the extension.
 
 **Downloads and storage**
 

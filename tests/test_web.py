@@ -4,11 +4,17 @@ web UI and the C++ CLI produce identical transcript documents.
 Run:  python3 -m unittest discover -s tests -p 'test_web.py'
 """
 
+import os
+import shutil
+import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+import browsers as b  # noqa: E402
 import server as s  # noqa: E402
 
 
@@ -88,6 +94,68 @@ class Document(unittest.TestCase):
     def test_classify(self):
         self.assertIn("429", s.classify_stderr("ERROR: HTTP Error 429: Too Many Requests"))
         self.assertEqual(s.classify_stderr("ERROR: Private video"), "video unavailable")
+
+
+def snss(*tabs):
+    """A minimal Chromium session file: one tab per (tab id, window id, url)."""
+    out = bytearray(b"SNSS" + struct.pack("<i", 3))
+
+    def cmd(cid, payload):
+        out.extend(struct.pack("<H", len(payload) + 1))
+        out.append(cid)
+        out.extend(payload)
+
+    for tid, win, url in tabs:
+        u = url.encode()
+        nav = struct.pack("<iii", tid, 0, len(u)) + u + b"\0" * (-len(u) % 4)
+        cmd(b.CMD_SET_TAB_WINDOW, struct.pack("<ii", win, tid))
+        cmd(b.CMD_UPDATE_NAVIGATION, struct.pack("<I", len(nav)) + nav)
+        cmd(b.CMD_SELECTED_NAVIGATION, struct.pack("<ii", tid, 0))
+    return bytes(out)
+
+
+class SessionTabs(unittest.TestCase):
+    """On Windows a running browser keeps its live session file locked, so
+    read_tabs falls back to the newest older snapshot and says how old it is."""
+
+    LIVE = "https://www.youtube.com/watch?v=liveliveliv"
+    OLD = "https://www.youtube.com/watch?v=oldoldoldol"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.old = self.dir / "Session_100"
+        self.old.write_bytes(snss((1, 1, self.OLD)))
+        os.utime(self.old, (1_000_000, 1_000_000))
+        self.live = self.dir / "Session_200"
+        self.live.write_bytes(snss((1, 1, self.LIVE), (2, 1, "https://example.com/")))
+        os.utime(self.live, (2_000_000, 2_000_000))
+
+    def locked(self, *paths):
+        """Make reading these files fail the way a Windows sharing violation does."""
+        real = Path.read_bytes
+
+        def read_bytes(path):
+            if path in paths:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path)
+
+        return mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_bytes)
+
+    def test_parses_open_tabs(self):
+        self.assertEqual(b.parse_snss(self.live.read_bytes()), [self.LIVE, "https://example.com/"])
+
+    def test_live_file_readable(self):
+        self.assertEqual(b.read_tabs(self.live), ([self.LIVE, "https://example.com/"], None))
+
+    def test_locked_live_file_falls_back_to_newest_snapshot(self):
+        with self.locked(self.live):
+            self.assertEqual(b.read_tabs(self.live), ([self.OLD], 1_000_000))
+
+    def test_everything_locked(self):
+        with self.locked(self.live, self.old):
+            with self.assertRaisesRegex(LookupError, "locked"):
+                b.read_tabs(self.live)
 
 
 if __name__ == "__main__":
