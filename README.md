@@ -190,7 +190,8 @@ The server only listens on `127.0.0.1` and rejects requests with a foreign `Host
    brew install ffmpeg deno   # deno is the JS runtime yt-dlp uses to see every format
    ```
    If brew complains about the Xcode license, run `sudo xcodebuild -license accept` first.
-3. yt-dlp downloads itself into `~/.cache/ytmerge/bin` on first run and checks for updates once a day. If `yt-dlp` is already on your PATH (for example from `brew install yt-dlp`), that one is used instead.
+3. yt-dlp downloads itself into `~/.cache/ytmerge/bin` on first run. If `yt-dlp` is already on your PATH (for example from `brew install yt-dlp` or `uv tool install yt-dlp`), that one is used instead.
+4. While the web UI runs, it updates yt-dlp once a day: its own copy with `yt-dlp -U`, a uv install with `uv tool upgrade yt-dlp`. It waits until nothing is downloading. Other installs, such as brew, are left to you. If the yt-dlp in use is more than 60 days old, the page shows a note with the command to update it, because YouTube tends to refuse downloads from old versions (HTTP 403).
 
 </details>
 

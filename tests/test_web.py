@@ -7,9 +7,12 @@ Run:  python3 -m unittest discover -s tests -p 'test_web.py'
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -94,6 +97,146 @@ class Document(unittest.TestCase):
     def test_classify(self):
         self.assertIn("429", s.classify_stderr("ERROR: HTTP Error 429: Too Many Requests"))
         self.assertEqual(s.classify_stderr("ERROR: Private video"), "video unavailable")
+
+    def test_classify_403_points_at_yt_dlp(self):
+        msg = s.classify_stderr("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        self.assertIn("403", msg)
+        self.assertIn("yt-dlp", msg)
+
+
+class YtdlpVersionAge(unittest.TestCase):
+    TODAY = date(2026, 10, 27)
+
+    def test_release(self):
+        self.assertEqual(s.version_age_days("2026.07.04", self.TODAY), 115)
+
+    def test_nightly_suffix(self):
+        self.assertEqual(s.version_age_days("2026.10.26.232843", self.TODAY), 1)
+
+    def test_unreadable(self):
+        self.assertIsNone(s.version_age_days(None, self.TODAY))
+        self.assertIsNone(s.version_age_days("garbage", self.TODAY))
+        self.assertIsNone(s.version_age_days("2026.13.40", self.TODAY))
+
+
+class YtdlpInstallMethod(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.own = self.tmp / "cache" / "bin"
+        self.uv_bin = self.tmp / "uvbin"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_own_copy(self):
+        self.assertEqual(s.install_method(str(self.own / "yt-dlp"), self.own, None, False), "own")
+
+    def test_uv_tool(self):
+        path = str(self.uv_bin / "yt-dlp.EXE")
+        self.assertEqual(s.install_method(path, self.own, str(self.uv_bin), True), "uv")
+
+    def test_uv_bin_dir_without_uv_tool_is_not_uv(self):
+        # A yt-dlp.exe dropped into ~/.local/bin by hand isn't uv's to upgrade.
+        path = str(self.uv_bin / "yt-dlp.exe")
+        self.assertEqual(s.install_method(path, self.own, str(self.uv_bin), False), "other")
+
+    def test_brew(self):
+        self.assertEqual(s.install_method("/opt/homebrew/bin/yt-dlp", self.own, None, False), "brew")
+
+    def test_unknown(self):
+        self.assertEqual(s.install_method(str(self.tmp / "x" / "yt-dlp"), self.own, None, False), "other")
+
+
+class YtdlpUpdates(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.stamp = self.tmp / "bin" / ".last-update-check"
+        self.calls = []
+        self.logs = []
+        self.version = "2026.07.04"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_fake(self, cmd, **kw):
+        """Stands in for subprocess.run: an upgrade bumps the version."""
+        self.calls.append(cmd)
+        if cmd[-1] == "--version":
+            return subprocess.CompletedProcess(cmd, 0, self.version + "\n", "")
+        self.version = "2026.10.26"
+        return subprocess.CompletedProcess(cmd, 0, "Updated yt-dlp\n", "")
+
+    def tool(self, method):
+        t = s.Ytdlp("/x/yt-dlp", method, run=self.run_fake, log=self.logs.append)
+        t.read_version()
+        return t
+
+    def test_update_is_logged(self):
+        self.tool("uv").maybe_update(self.stamp, time.time())
+        self.assertEqual(self.logs, ["yt-dlp updated: 2026.07.04 → 2026.10.26"])
+
+    def test_waits_while_downloads_run(self):
+        # Upgrading while yt-dlp runs can fail on Windows (files in use).
+        t = self.tool("uv")
+        self.assertFalse(t.maybe_update(self.stamp, time.time(), busy=True))
+        self.assertEqual(t.version, "2026.07.04")
+
+    def test_update_commands(self):
+        self.assertEqual(s.update_command("uv", "/x/yt-dlp"), ["uv", "tool", "upgrade", "yt-dlp"])
+        self.assertEqual(s.update_command("own", "/x/yt-dlp"), ["/x/yt-dlp", "-U"])
+        self.assertIsNone(s.update_command("brew", "/x/yt-dlp"))
+        self.assertIsNone(s.update_command("other", "/x/yt-dlp"))
+
+    def test_uv_install_is_upgraded_when_never_checked(self):
+        t = self.tool("uv")
+        self.assertTrue(t.maybe_update(self.stamp, time.time()))
+        self.assertIn(["uv", "tool", "upgrade", "yt-dlp"], self.calls)
+        self.assertEqual(t.version, "2026.10.26")
+        self.assertTrue(self.stamp.is_file())
+
+    def test_checked_today_is_skipped(self):
+        t = self.tool("uv")
+        self.stamp.parent.mkdir(parents=True)
+        self.stamp.touch()
+        self.assertFalse(t.maybe_update(self.stamp, time.time()))
+        self.assertEqual(t.version, "2026.07.04")
+
+    def test_checked_yesterday_runs_again(self):
+        t = self.tool("uv")
+        self.stamp.parent.mkdir(parents=True)
+        self.stamp.touch()
+        self.assertTrue(t.maybe_update(self.stamp, time.time() + 86400 + 60))
+
+    def test_brew_is_left_alone(self):
+        t = self.tool("brew")
+        self.assertFalse(t.maybe_update(self.stamp, time.time()))
+        self.assertEqual(self.calls, [["/x/yt-dlp", "--version"]])
+
+    def test_failed_update_is_reported_and_retried(self):
+        def failing(cmd, **kw):
+            if cmd[-1] == "--version":
+                return subprocess.CompletedProcess(cmd, 0, "2026.07.04\n", "")
+            return subprocess.CompletedProcess(cmd, 2, "", "error: failed to remove file: in use\n")
+        t = s.Ytdlp("/x/yt-dlp", "uv", run=failing, log=self.logs.append)
+        self.assertTrue(t.maybe_update(self.stamp, time.time()))
+        self.assertIn("in use", t.error)
+        self.assertIn("in use", self.logs[0])
+        self.assertFalse(self.stamp.exists())  # no stamp, so the next check tries again
+
+    def test_info_flags_old_version_with_fix(self):
+        info = self.tool("uv").info(date(2026, 10, 27))
+        self.assertEqual(info["version"], "2026.07.04")
+        self.assertEqual(info["ageDays"], 115)
+        self.assertTrue(info["old"])
+        self.assertEqual(info["fix"], "uv tool upgrade yt-dlp")
+
+    def test_info_recent_version_is_not_old(self):
+        self.version = "2026.10.26"
+        self.assertFalse(self.tool("uv").info(date(2026, 10, 27))["old"])
+
+    def test_info_unknown_version_is_not_old(self):
+        t = s.Ytdlp("/x/yt-dlp", "other", run=self.run_fake, log=self.logs.append)
+        self.assertFalse(t.info(date(2026, 10, 27))["old"])
 
 
 def snss(*tabs):

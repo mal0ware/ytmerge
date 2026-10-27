@@ -25,6 +25,11 @@
   .sub { color: var(--muted); font-size: 13px; }
   .pill { margin-left: auto; font-size: 12px; color: var(--muted); background: var(--chip);
           padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+  .note { margin: -4px 0 14px; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+          border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+          background: color-mix(in srgb, var(--warn) 10%, var(--panel)); }
+  .note code { font: 12px ui-monospace, Menlo, monospace; background: var(--chip); padding: 1px 5px;
+               border-radius: 5px; cursor: copy; white-space: nowrap; }
   textarea { width: 100%; min-height: 96px; resize: vertical; padding: 12px 14px; border-radius: 12px;
              border: 1px solid var(--line); background: var(--panel); color: var(--ink);
              font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
@@ -116,6 +121,7 @@
     <span class="sub">links in → videos &amp; transcripts out</span>
     <span class="pill" id="pill">local · 127.0.0.1</span>
   </header>
+  <p class="note" id="ytdlpNote" hidden></p>
 
   <textarea id="input" spellcheck="false"
     placeholder="Paste anything containing YouTube links — one per line, a whole chat log, whatever. Pasting starts the fetch."></textarea>
@@ -159,6 +165,7 @@ let videos = {};          // id -> server state
 let downloads = {};       // "id:kind" -> server state
 const wanted = new Set(); // "id:kind" downloads the user asked for and hasn't received yet
 let pollTimer = null, autoCopyArmed = false, ffmpeg = true;
+let ytdlp = null;         // server's view of the yt-dlp in use (version, age, how to update)
 
 $("autocopy").checked = store.get("ytmerge.autocopy", true);
 
@@ -393,6 +400,7 @@ async function poll() {
     ffmpeg = s.ffmpeg;
     for (const v of s.videos) videos[v.id] = v;
     downloads = s.downloads;
+    ytdlp = s.ytdlp; renderNote();
   } catch { /* server restarting — keep last view, retry */ }
 
   // A page reload or server restart loses in-memory state: requeue unknowns.
@@ -412,6 +420,23 @@ async function poll() {
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// An old yt-dlp is the usual reason YouTube refuses downloads (HTTP 403). The
+// server upgrades it daily when it can; this note covers the times it can't.
+function renderNote() {
+  const y = ytdlp, n = $("ytdlpNote");
+  n.hidden = !y?.old;
+  if (n.hidden) return;
+  const fix = y.updating ? "Updating it now…"
+    : y.fix ? `Update it with <code title="Click to copy">${esc(y.fix)}</code>.`
+    : "Update it the same way you installed it.";
+  const failed = y.error && !y.updating ? ` The automatic update failed: ${esc(y.error)}` : "";
+  n.innerHTML = `yt-dlp ${esc(y.version)} is ${y.ageDays} days old, so YouTube may refuse downloads. ${fix}${failed}`;
+}
+
+async function checkYtdlp() {
+  try { ytdlp = (await api("/api/status")).ytdlp; renderNote(); } catch { /* server restarting */ }
+}
 
 function dlButton(id, kind, label) {
   const d = downloads[`${id}:${kind}`];
@@ -602,6 +627,9 @@ const params = new URLSearchParams(location.search), q = params.get("q");
 if (q || params.has("tabs")) history.replaceState(null, "", "/");
 if (q) submit(q); else if (params.has("tabs")) { poll(); tabsGo(); } else poll();
 $("input").focus();
+$("ytdlpNote").onclick = (e) => { if (e.target.tagName === "CODE") copy(e.target.textContent, "the command"); };
+checkYtdlp();
+setInterval(checkYtdlp, 10 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -23,6 +23,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -161,6 +162,8 @@ def parse_header(document: str) -> dict:
 def classify_stderr(e: str) -> str:
     if "HTTP Error 429" in e or "Too Many Requests" in e:
         return "rate-limited by YouTube (429) — switch network or wait"
+    if "HTTP Error 403" in e:
+        return "YouTube refused the download (HTTP 403) — updating yt-dlp usually fixes this"
     if "Sign in to confirm" in e:
         return "YouTube wants a sign-in check (bot detection) — try another network"
     for s in ("Private video", "Video unavailable", "This video is unavailable",
@@ -234,18 +237,141 @@ def ensure_ytdlp(log=print) -> str:
     return str(local)
 
 
-def maybe_self_update(ytdlp: str) -> None:
-    """Daily `yt-dlp -U` for our own copy (a brew install updates via brew)."""
-    if Path(ytdlp).parent != cache_dir() / "bin":
-        return
-    stamp = cache_dir() / "bin" / ".last-update-check"
+# ─── Keeping yt-dlp current ─────────────────────────────────────────────────
+# YouTube changes often, and an old yt-dlp starts getting HTTP 403s. The copy
+# in use is upgraded daily when ytmerge knows how (its own download, or a
+# `uv tool install`). Otherwise the page says how old it is and how to update.
+
+YTDLP_OLD_DAYS = 60
+UPDATE_EVERY_S = 86400
+UPDATE_CHECK_EVERY_S = 6 * 3600  # the server runs for days, so keep checking
+FIXES = {"own": "yt-dlp -U", "uv": "uv tool upgrade yt-dlp", "brew": "brew upgrade yt-dlp"}
+VERSION_RE = re.compile(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})")
+
+
+def version_age_days(version: str | None, today: date) -> int | None:
+    """Days since a yt-dlp release ("2026.10.26"; nightlies add a suffix)."""
+    m = VERSION_RE.match(version or "")
+    if not m:
+        return None
     try:
-        if time.time() - stamp.stat().st_mtime < 86400:
-            return
-    except OSError:
-        pass
-    subprocess.run([ytdlp, "-U"], capture_output=True, timeout=300)
-    stamp.touch()
+        released = date(*map(int, m.groups()))
+    except ValueError:
+        return None
+    return max(0, (today - released).days)
+
+
+def install_method(path: str, own_bin: Path, uv_bin: str | None, uv_has_ytdlp: bool) -> str:
+    """How the yt-dlp at `path` was installed: own | uv | brew | other."""
+    def norm(p) -> str:
+        return os.path.normcase(os.path.abspath(p))
+    parent = norm(os.path.dirname(os.path.abspath(path)))
+    if parent == norm(own_bin):
+        return "own"
+    if uv_bin and uv_has_ytdlp and parent == norm(uv_bin):
+        return "uv"
+    real = os.path.realpath(path).replace("\\", "/").lower()
+    if "/homebrew/" in real or "/cellar/" in real:
+        return "brew"
+    return "other"
+
+
+def update_command(method: str, path: str) -> list[str] | None:
+    """The upgrade ytmerge runs by itself, or None when it's left to the user
+    (brew upgrades are the user's call; unknown installs can't be guessed)."""
+    if method == "own":
+        return [path, "-U"]
+    if method == "uv":
+        return ["uv", "tool", "upgrade", "yt-dlp"]
+    return None
+
+
+def detect_install(path: str) -> str:
+    uv = shutil.which("uv")
+    uv_bin, has = None, False
+    if uv:
+        def tool_dir(*extra: str) -> str:
+            return subprocess.run([uv, "tool", "dir", *extra], capture_output=True,
+                                  text=True, timeout=30).stdout.strip()
+        try:
+            uv_bin = tool_dir("--bin") or None
+            tools = tool_dir()
+            has = bool(tools) and (Path(tools) / "yt-dlp" / "uv-receipt.toml").is_file()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return install_method(path, cache_dir() / "bin", uv_bin, has)
+
+
+class Ytdlp:
+    """The yt-dlp in use: its version, how it was installed, keeping it current."""
+
+    def __init__(self, path: str, method: str, run=subprocess.run, log=print):
+        self.path, self.method = path, method
+        self._run, self._log = run, log
+        self.version: str | None = None
+        self.updating = False
+        self.error: str | None = None
+
+    def read_version(self) -> None:
+        try:
+            r = self._run([self.path, "--version"], capture_output=True, text=True, timeout=60)
+            self.version = r.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            self.version = None
+
+    def maybe_update(self, stamp: Path, now: float, busy: bool = False) -> bool:
+        """Upgrade if ytmerge may, nothing is using yt-dlp, and the last good
+        upgrade was over a day ago. A failure leaves the stamp alone, so the
+        next check tries again. Returns whether an upgrade was attempted."""
+        cmd = update_command(self.method, self.path)
+        if cmd is None or busy:
+            return False
+        try:
+            if now - stamp.stat().st_mtime < UPDATE_EVERY_S:
+                return False
+        except OSError:
+            pass
+        before = self.version
+        self.updating = True
+        try:
+            r = self._run(cmd, capture_output=True, text=True, timeout=300)
+            out = [ln for ln in (r.stderr + r.stdout).splitlines() if ln.strip()]
+            self.error = None if r.returncode == 0 else (out[-1][:200] if out else f"exit code {r.returncode}")
+        except (OSError, subprocess.SubprocessError) as e:
+            self.error = str(e)[:200]
+        finally:
+            self.updating = False
+        self.read_version()
+        if self.error:
+            self._log(f"yt-dlp update failed ({' '.join(cmd)}): {self.error}")
+            return True
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        if self.version != before:
+            self._log(f"yt-dlp updated: {before} → {self.version}")
+        return True
+
+    def info(self, today: date) -> dict:
+        age = version_age_days(self.version, today)
+        return {"version": self.version, "ageDays": age,
+                "old": age is not None and age > YTDLP_OLD_DAYS,
+                "fix": FIXES.get(self.method), "updating": self.updating, "error": self.error}
+
+
+def keep_ytdlp_current(tool: Ytdlp, busy) -> None:
+    """Background thread: learn how yt-dlp was installed, then upgrade it daily."""
+    tool.method = detect_install(tool.path)
+    tool.read_version()
+    auto = update_command(tool.method, tool.path) is not None
+    print(f"yt-dlp {tool.version} ({tool.method} install"
+          f"{', updated daily' if auto else ', not updated by ytmerge'})")
+    stamp = cache_dir() / "bin" / ".last-update-check"
+    while True:
+        if busy():
+            time.sleep(60)
+            continue
+        tool.maybe_update(stamp, time.time())
+        time.sleep(UPDATE_CHECK_EVERY_S)
 
 
 def clean_old_media(media_root: Path) -> None:
@@ -276,6 +402,12 @@ class App:
     def has_ffmpeg(self) -> bool:
         # Checked live so `brew install ffmpeg` takes effect without a restart.
         return shutil.which("ffmpeg") is not None
+
+    def busy(self) -> bool:
+        """Whether any yt-dlp run is queued or going (a yt-dlp upgrade waits)."""
+        with self.lock:
+            return (any(v["status"] in ("queued", "fetching") for v in self.videos.values())
+                    or any(d["status"] in ("queued", "downloading") for d in self.downloads.values()))
 
     # transcripts ------------------------------------------------------------
 
@@ -428,6 +560,7 @@ class App:
 
 class Handler(BaseHTTPRequestHandler):
     app: App
+    tool: Ytdlp
     port: int
     server_version = "ytmerge-web"
 
@@ -478,6 +611,7 @@ class Handler(BaseHTTPRequestHandler):
             ids = [i for i in q.get("ids", [""])[0].split(",") if VALID_ID.match(i)]
             snap = self.app.snapshot(ids)
             snap["ffmpeg"] = self.app.has_ffmpeg
+            snap["ytdlp"] = self.tool.info(date.today())
             self._json(snap)
         elif u.path == "/api/file":
             self._send_file(q.get("id", [""])[0], q.get("kind", [""])[0])
@@ -554,10 +688,12 @@ def main() -> int:
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    threading.Thread(target=maybe_self_update, args=(ytdlp,), daemon=True).start()
 
     Handler.app = App(ytdlp)
+    Handler.tool = Ytdlp(ytdlp, "other")  # the thread works out the real method
     Handler.port = args.port
+    threading.Thread(target=keep_ytdlp_current, args=(Handler.tool, Handler.app.busy),
+                     daemon=True).start()
     server.daemon_threads = True
     print(f"ytmerge web → {url}   (yt-dlp: {ytdlp}; ffmpeg: "
           f"{'yes' if Handler.app.has_ffmpeg else 'MISSING — video downloads need it: brew install ffmpeg'})")
